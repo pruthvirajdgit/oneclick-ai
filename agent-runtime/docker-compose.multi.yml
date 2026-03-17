@@ -1,0 +1,150 @@
+# =============================================================================
+# OneClick.ai — Multi-Agent Setup (Testing Scaling)
+# =============================================================================
+# Runs multiple agents + Traefik reverse proxy for multi-agent testing.
+#
+# Usage:
+#   docker compose -f docker-compose.multi.yml up -d --build
+#
+# Traefik dashboard: http://localhost:8080
+# Agents accessible via Traefik on port 80.
+# =============================================================================
+
+services:
+  # Traefik reverse proxy — routes traffic to agent containers
+  traefik:
+    image: traefik:v3.0
+    container_name: oneclick-traefik
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - agent-network
+
+  # Agent 1 — Customer Support
+  agent-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: oneclick-agent-1
+    restart: unless-stopped
+    tty: true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.agent-1.rule=PathPrefix(`/agent/agent-1`)"
+      - "traefik.http.routers.agent-1.entrypoints=web"
+      - "traefik.http.services.agent-1.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.agent-1-strip.stripprefix.prefixes=/agent/agent-1"
+      - "traefik.http.routers.agent-1.middlewares=agent-1-strip"
+    volumes:
+      - agent-1-state:/home/node/.openclaw
+      - agent-1-workspace:/home/node/workspace
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - AGENT_MODEL=openrouter/auto
+      - AGENT_NAME=Support Agent
+      - AGENT_SYSTEM_PROMPT=You are a customer support agent. You are helpful, patient, and always try to resolve issues on the first interaction.
+      - AGENT_PORT=3000
+      - OPENCLAW_GATEWAY_TOKEN=oneclick-agent-1
+      - NODE_OPTIONS=--max-old-space-size=1280
+    mem_limit: 2048m
+    healthcheck:
+      test: ["CMD", "openclaw", "health", "--timeout", "8000"]
+      interval: 60s
+      timeout: 10s
+      start_period: 45s
+      retries: 3
+    networks:
+      - agent-network
+
+  # Agent 2 — Sales Research
+  agent-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: oneclick-agent-2
+    restart: unless-stopped
+    tty: true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.agent-2.rule=PathPrefix(`/agent/agent-2`)"
+      - "traefik.http.routers.agent-2.entrypoints=web"
+      - "traefik.http.services.agent-2.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.agent-2-strip.stripprefix.prefixes=/agent/agent-2"
+      - "traefik.http.routers.agent-2.middlewares=agent-2-strip"
+    volumes:
+      - agent-2-state:/home/node/.openclaw
+      - agent-2-workspace:/home/node/workspace
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - AGENT_MODEL=openrouter/auto
+      - AGENT_NAME=Sales Researcher
+      - AGENT_SYSTEM_PROMPT=You are a sales research agent. You research prospects, analyze companies, identify decision-makers, and draft personalized outreach emails.
+      - AGENT_PORT=3000
+      - OPENCLAW_GATEWAY_TOKEN=oneclick-agent-2
+      - NODE_OPTIONS=--max-old-space-size=1280
+    mem_limit: 2048m
+    healthcheck:
+      test: ["CMD", "openclaw", "health", "--timeout", "8000"]
+      interval: 60s
+      timeout: 10s
+      start_period: 45s
+      retries: 3
+    networks:
+      - agent-network
+
+  # Agent 3 — Personal Assistant
+  agent-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: oneclick-agent-3
+    restart: unless-stopped
+    tty: true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.agent-3.rule=PathPrefix(`/agent/agent-3`)"
+      - "traefik.http.routers.agent-3.entrypoints=web"
+      - "traefik.http.services.agent-3.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.agent-3-strip.stripprefix.prefixes=/agent/agent-3"
+      - "traefik.http.routers.agent-3.middlewares=agent-3-strip"
+    volumes:
+      - agent-3-state:/home/node/.openclaw
+      - agent-3-workspace:/home/node/workspace
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - AGENT_MODEL=openrouter/auto
+      - AGENT_NAME=Personal Assistant
+      - AGENT_SYSTEM_PROMPT=You are a personal assistant. You help manage tasks, set reminders, draft emails, and help the user think through decisions clearly.
+      - AGENT_PORT=3000
+      - OPENCLAW_GATEWAY_TOKEN=oneclick-agent-3
+      - NODE_OPTIONS=--max-old-space-size=1280
+    mem_limit: 2048m
+    healthcheck:
+      test: ["CMD", "openclaw", "health", "--timeout", "8000"]
+      interval: 60s
+      timeout: 10s
+      start_period: 45s
+      retries: 3
+    networks:
+      - agent-network
+
+networks:
+  agent-network:
+    driver: bridge
+
+volumes:
+  agent-1-state:
+  agent-1-workspace:
+  agent-2-state:
+  agent-2-workspace:
+  agent-3-state:
+  agent-3-workspace:

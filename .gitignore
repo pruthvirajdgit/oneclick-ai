@@ -1,0 +1,23 @@
+# Environment files with secrets
+.env
+agent-runtime/.env
+
+# Docker volumes (local data)
+agent-runtime/docs/*.pdf
+agent-runtime/docs/*.docx
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Node (for when we add the dashboard later)
+node_modules/
+.next/
+dist/
+
+# Logs
+*.log
