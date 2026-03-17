@@ -150,6 +150,7 @@ openclaw message send --message "Hi"     # Send a one-off message
 
 ```
 oneclick-ai/
+├── start.sh                    # ⭐ ONE-CLICK ENTRY POINT — run this
 ├── agent-runtime/
 │   ├── Dockerfile              # Custom OpenClaw image (extends official)
 │   ├── docker-compose.yml      # Single agent (local dev, 2GB)
@@ -159,7 +160,7 @@ oneclick-ai/
 │   ├── .env.example            # Template for new setups
 │   └── docs/                   # Company docs mounted into agents
 ├── scripts/
-│   ├── setup.sh                # One-command setup (Docker check → build → start)
+│   ├── setup.sh                # Docker + .env setup (called by start.sh)
 │   └── agent.sh                # Lifecycle: start/stop/restart/status/logs/prompt/model
 ├── docs/                       # Project documentation
 ├── context_bank.md             # This file — architecture & design context
@@ -176,8 +177,9 @@ oneclick-ai/
 
 1. **Fix permissions** — Docker volumes mount as root; chown to node
 2. **Write config JSON** — Direct file write (fast, avoids slow CLI calls)
-3. **Configure channels** — Telegram/Slack/Discord via `openclaw channels add`
-4. **Start gateway** — `exec su node -c "openclaw gateway run --verbose --token $TOKEN"`
+3. **Auto-approve first device** — Approves the first pending browser connection
+4. **Configure channels** — Telegram/Slack/Discord via `openclaw channels add`
+5. **Start gateway** — `exec su node -c "openclaw gateway run --verbose --token $TOKEN"`
 
 Environment variables consumed:
 - `OPENROUTER_API_KEY` — LLM API key (passed through to OpenClaw)
@@ -232,8 +234,8 @@ usage_logs     → agent_id, tokens_in, tokens_out, date
 
 ## 10. Cloud Plan (After Local Works)
 
-- **VM**: Azure D4s v5 (4 vCPU, 16GB RAM) — ~40-50 agent containers at 256MB each
-  - Note: OpenClaw needs 2GB per agent, so realistic capacity is ~6-8 agents per VM
+- **VM**: Azure D4s v5 (4 vCPU, 16GB RAM)
+  - OpenClaw needs 2GB per agent, so realistic capacity is ~6-8 agents per VM
 - **Proxy**: Traefik reverse proxy for routing
 - **Dashboard**: Azure Container Apps
 - **Timeline**: Move to cloud when a second person needs to test it
@@ -259,30 +261,3 @@ usage_logs     → agent_id, tokens_in, tokens_out, date
 4. **Plugin /tmp permissions**: The ollama plugin fails to load due to `/tmp/jiti/` permissions. Non-critical (we don't use local models).
 5. **TTY required**: docker-compose needs `tty: true` for the gateway to run properly.
 6. **Model naming**: OpenRouter models are `openrouter/<model>`, the gateway shows `openrouter/openrouter/<model>` (cosmetic).
-
----
-
-## 13. Useful Commands
-
-```bash
-# Start single agent
-cd agent-runtime && docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Open dashboard
-docker exec oneclick-agent bash -c "su -s /bin/sh node -c 'HOME=/home/node openclaw dashboard --no-open'"
-# → Open URL in browser
-
-# Approve browser pairing
-docker exec oneclick-agent bash -c "su -s /bin/sh node -c 'HOME=/home/node openclaw devices list --url ws://127.0.0.1:3000 --token oneclick-local-dev'"
-docker exec oneclick-agent bash -c "su -s /bin/sh node -c 'HOME=/home/node openclaw devices approve --url ws://127.0.0.1:3000 --token oneclick-local-dev <REQUEST_ID>'"
-
-# Check status
-docker compose ps
-docker stats oneclick-agent --no-stream
-
-# Multi-agent
-docker compose -f docker-compose.multi.yml up -d --build
-```

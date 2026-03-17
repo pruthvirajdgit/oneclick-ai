@@ -8,8 +8,22 @@
 
 set -e
 
-RUNTIME_DIR="$(dirname "$0")/../agent-runtime"
+RUNTIME_DIR="$(cd "$(dirname "$0")/../agent-runtime" && pwd)"
 cd "$RUNTIME_DIR"
+
+# Read gateway token from .env
+GW_TOKEN=$(grep -oP 'OPENCLAW_GATEWAY_TOKEN=\K.*' .env 2>/dev/null || echo "oneclick-local-dev")
+[ -z "$GW_TOKEN" ] && GW_TOKEN="oneclick-local-dev"
+
+# Helper to run openclaw commands inside the container
+oclaw() {
+    docker exec oneclick-agent bash -c "su -s /bin/sh node -c \"HOME=/home/node OPENCLAW_GATEWAY_TOKEN='${GW_TOKEN}' $1\"" 2>&1
+}
+
+# Helper to run openclaw commands with explicit gateway URL
+oclaw_gw() {
+    docker exec oneclick-agent bash -c "su -s /bin/sh node -c \"HOME=/home/node openclaw $1 --url ws://127.0.0.1:3000 --token '${GW_TOKEN}'\"" 2>&1
+}
 
 usage() {
     echo "Usage: ./agent.sh <command>"
@@ -24,6 +38,8 @@ usage() {
     echo "  rebuild     Rebuild and restart the agent"
     echo "  prompt      Update the agent's system prompt"
     echo "  model       Update the agent's LLM model"
+    echo "  dashboard   Print the dashboard URL"
+    echo "  approve     Approve pending browser pairing requests"
     echo ""
     echo "Multi-agent commands:"
     echo "  multi-start   Start 3 agents with Traefik (scaling test)"
@@ -35,7 +51,7 @@ case "${1:-}" in
     start)
         echo "🚀 Starting agent..."
         docker compose up -d
-        echo "✅ Agent started. Gateway: ws://localhost:${AGENT_PORT:-3000}"
+        echo "✅ Agent started. Run: ./agent.sh dashboard"
         ;;
     stop)
         echo "🛑 Stopping agent..."
@@ -44,7 +60,8 @@ case "${1:-}" in
         ;;
     restart)
         echo "🔄 Restarting agent..."
-        docker compose restart
+        docker compose down
+        docker compose up -d
         echo "✅ Agent restarted."
         ;;
     status)
@@ -54,6 +71,8 @@ case "${1:-}" in
         STATUS=$(docker compose ps --format '{{.Status}}' 2>/dev/null | head -1)
         if echo "$STATUS" | grep -q "healthy"; then
             echo "🟢 Agent is healthy and running"
+            echo ""
+            docker stats oneclick-agent --no-stream --format "   Memory: {{.MemUsage}} ({{.MemPerc}})" 2>/dev/null || true
         elif echo "$STATUS" | grep -q "Up"; then
             echo "🟡 Agent is starting..."
         else
@@ -65,7 +84,7 @@ case "${1:-}" in
         ;;
     shell)
         echo "🐚 Opening shell in agent container..."
-        docker compose exec agent /bin/bash
+        docker exec -it oneclick-agent bash
         ;;
     rebuild)
         echo "🔨 Rebuilding and restarting agent..."
@@ -73,6 +92,32 @@ case "${1:-}" in
         docker compose build --no-cache
         docker compose up -d
         echo "✅ Agent rebuilt and started."
+        ;;
+    dashboard)
+        PORT=$(grep -oP 'AGENT_PORT=\K.*' .env 2>/dev/null || echo "3000")
+        [ -z "$PORT" ] && PORT="3000"
+        echo ""
+        echo "🌐 Dashboard URL:"
+        echo "   http://localhost:${PORT}/#token=${GW_TOKEN}"
+        echo ""
+        echo "   If it says 'Pairing required', run: ./agent.sh approve"
+        echo ""
+        ;;
+    approve)
+        echo "🔑 Checking for pending pairing requests..."
+        PENDING=$(oclaw_gw "devices list --json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        if [ -z "$PENDING" ]; then
+            # Try non-json fallback
+            PENDING=$(oclaw_gw "devices list" 2>/dev/null | grep -oP '│ \K[0-9a-f-]{36}' | head -1)
+        fi
+        if [ -n "$PENDING" ]; then
+            echo "   Found pending request: ${PENDING}"
+            oclaw_gw "devices approve ${PENDING}" 2>/dev/null
+            echo "✅ Device approved! Refresh your browser."
+        else
+            echo "   No pending pairing requests found."
+            echo "   Open the dashboard first, then re-run this command."
+        fi
         ;;
     prompt)
         if [ -z "${2:-}" ]; then
@@ -83,14 +128,13 @@ case "${1:-}" in
         else
             NEW_PROMPT="$2"
         fi
-        # Update .env
         if [[ "$OSTYPE" == "darwin"* ]]; then
             sed -i '' "s|^AGENT_SYSTEM_PROMPT=.*|AGENT_SYSTEM_PROMPT=${NEW_PROMPT}|" .env
         else
             sed -i "s|^AGENT_SYSTEM_PROMPT=.*|AGENT_SYSTEM_PROMPT=${NEW_PROMPT}|" .env
         fi
         echo "✅ Prompt updated. Restarting agent..."
-        docker compose restart
+        docker compose down && docker compose up -d
         echo "✅ Agent restarted with new prompt."
         ;;
     model)
@@ -116,7 +160,7 @@ case "${1:-}" in
             sed -i "s|^AGENT_MODEL=.*|AGENT_MODEL=${MODEL}|" .env
         fi
         echo "✅ Model set to: ${MODEL}. Restarting..."
-        docker compose restart
+        docker compose down && docker compose up -d
         echo "✅ Agent restarted with new model."
         ;;
     multi-start)
