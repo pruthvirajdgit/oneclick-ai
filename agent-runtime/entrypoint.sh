@@ -108,6 +108,9 @@ echo ""
 # Clear root-owned jiti cache right before handing off to node
 rm -rf /tmp/jiti 2>/dev/null || true
 
+# Background task: fix permissions on new files created by gateway (runs once after 30s)
+(sleep 30 && chmod -R a+rw /home/node/.openclaw 2>/dev/null) &
+
 # Start gateway directly — running as root with HOME=/home/node
 # so all file operations (including jiti cache) succeed
 export HOME=/home/node
