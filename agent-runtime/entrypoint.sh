@@ -18,6 +18,13 @@ echo ""
 
 # ── 0. Fix volume + tmp permissions ──────────────────────────────────────────
 mkdir -p /home/node/.openclaw /home/node/workspace
+mkdir -p /home/node/.openclaw/agents/main/agent
+mkdir -p /home/node/.openclaw/agents/main/sessions
+mkdir -p /home/node/.openclaw/cron
+mkdir -p /home/node/.openclaw/canvas
+mkdir -p /home/node/.openclaw/devices
+mkdir -p /home/node/.openclaw/identity
+mkdir -p /home/node/.openclaw/logs
 chown -R node:node /home/node/.openclaw /home/node/workspace /data/docs 2>/dev/null || true
 chmod 1777 /tmp 2>/dev/null || true
 
