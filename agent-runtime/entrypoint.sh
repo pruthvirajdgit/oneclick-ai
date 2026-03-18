@@ -27,6 +27,9 @@ mkdir -p /home/node/.openclaw/identity
 mkdir -p /home/node/.openclaw/logs
 chown -R node:node /home/node/.openclaw /home/node/workspace /data/docs 2>/dev/null || true
 chmod 1777 /tmp 2>/dev/null || true
+# Fix jiti plugin cache — remove root-owned files so node can recreate them
+find /tmp/jiti -not -user node -delete 2>/dev/null || true
+mkdir -p /tmp/jiti && chmod 1777 /tmp/jiti
 
 # ── 1. Write config (avoids slow per-command plugin loading) ─────────────────
 CONFIG_FILE="/home/node/.openclaw/openclaw.json"
@@ -91,10 +94,15 @@ echo ""
 echo "   🧠 Starting OpenClaw Gateway on port ${GATEWAY_PORT}..."
 echo ""
 
-exec su -s /bin/sh node -c "
-  export HOME=/home/node
-  export OPENROUTER_API_KEY='${OPENROUTER_API_KEY}'
-  export NODE_OPTIONS='--max-old-space-size=1280'
-  export OPENCLAW_GATEWAY_TOKEN='${GW_TOKEN}'
-  exec openclaw gateway run --verbose --token '${GW_TOKEN}'
-"
+# Clear root-owned jiti cache right before handing off to node
+rm -rf /tmp/jiti 2>/dev/null || true
+
+# Use env to pass all required variables to the node process
+exec su -s /bin/sh node -c "exec env \
+  HOME=/home/node \
+  OPENROUTER_API_KEY='${OPENROUTER_API_KEY}' \
+  OLLAMA_HOST='${OLLAMA_HOST:-http://host.docker.internal:11434}' \
+  OLLAMA_API_KEY='${OLLAMA_API_KEY:-ollama-local}' \
+  NODE_OPTIONS='--max-old-space-size=1280' \
+  OPENCLAW_GATEWAY_TOKEN='${GW_TOKEN}' \
+  openclaw gateway run --verbose --token '${GW_TOKEN}'"

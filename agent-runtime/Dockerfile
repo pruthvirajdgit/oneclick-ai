@@ -11,8 +11,9 @@ FROM ghcr.io/openclaw/openclaw:latest
 USER root
 
 # Create directories for docs and workspace
-RUN mkdir -p /data/docs /home/node/workspace \
-    && chown -R node:node /data/docs /home/node/workspace
+RUN mkdir -p /data/docs /home/node/workspace /tmp/jiti \
+    && chown -R node:node /data/docs /home/node/workspace /tmp/jiti \
+    && chmod 1777 /tmp /tmp/jiti
 
 # Copy entrypoint with correct permissions
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/oneclick-entrypoint.sh
