@@ -50,7 +50,17 @@ cat > "${CONFIG_FILE}" << CFGEOF
     "defaults": {
       "model": { "primary": "${MODEL}" },
       "models": { "${MODEL}": {} },
-      "workspace": "/home/node/workspace"
+      "workspace": "/home/node/workspace",
+      "bootstrapMaxChars": 2000,
+      "contextTokens": 16000
+    }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "${OLLAMA_HOST:-http://host.docker.internal:11434}/v1",
+        "models": []
+      }
     }
   },
   "commands": {
@@ -61,7 +71,8 @@ cat > "${CONFIG_FILE}" << CFGEOF
   }
 }
 CFGEOF
-chown node:node "${CONFIG_FILE}"
+chown -R node:node /home/node/.openclaw
+chmod -R a+rw /home/node/.openclaw
 echo "   ✅ Config written (model: ${MODEL})"
 
 # ── 2. Configure messaging channels (only if tokens provided) ────────────────
@@ -97,12 +108,12 @@ echo ""
 # Clear root-owned jiti cache right before handing off to node
 rm -rf /tmp/jiti 2>/dev/null || true
 
-# Use env to pass all required variables to the node process
-exec su -s /bin/sh node -c "exec env \
-  HOME=/home/node \
-  OPENROUTER_API_KEY='${OPENROUTER_API_KEY}' \
-  OLLAMA_HOST='${OLLAMA_HOST:-http://host.docker.internal:11434}' \
-  OLLAMA_API_KEY='${OLLAMA_API_KEY:-ollama-local}' \
-  NODE_OPTIONS='--max-old-space-size=1280' \
-  OPENCLAW_GATEWAY_TOKEN='${GW_TOKEN}' \
-  openclaw gateway run --verbose --token '${GW_TOKEN}'"
+# Start gateway directly — running as root with HOME=/home/node
+# so all file operations (including jiti cache) succeed
+export HOME=/home/node
+export OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
+export OLLAMA_HOST="${OLLAMA_HOST:-http://host.docker.internal:11434}"
+export OLLAMA_API_KEY="${OLLAMA_API_KEY:-ollama-local}"
+export NODE_OPTIONS="--max-old-space-size=1280"
+export OPENCLAW_GATEWAY_TOKEN="${GW_TOKEN}"
+exec openclaw gateway run --verbose --token "${GW_TOKEN}"
