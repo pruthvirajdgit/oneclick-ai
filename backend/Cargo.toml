@@ -83,3 +83,5 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+axum.workspace = true
+metrics-exporter-prometheus.workspace = true

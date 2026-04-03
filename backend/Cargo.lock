@@ -1796,6 +1796,8 @@ name = "oneclick-backend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum 0.8.8",
+ "metrics-exporter-prometheus",
  "oneclick-agent-tools",
  "oneclick-api",
  "oneclick-llm-proxy",

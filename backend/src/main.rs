@@ -1,8 +1,22 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use oneclick_shared::config::Config;
+use oneclick_shared::db;
+use oneclick_shared::redis;
+
+use oneclick_api::state::AppState;
+use oneclick_llm_proxy::LlmProxy;
+use oneclick_monitor::IdleMonitor;
+use oneclick_orchestrator::{DockerRuntime, Orchestrator};
+use oneclick_scheduler::Scheduler;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
+    // Initialize structured logging (JSON in prod, pretty in dev)
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -13,16 +27,73 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting OneClick.ai backend");
 
-    // TODO: Load config
-    // TODO: Connect to PostgreSQL
-    // TODO: Connect to Redis
-    // TODO: Initialize orchestrator
-    // TODO: Build axum router
-    // TODO: Start scheduler
-    // TODO: Start idle monitor
-    // TODO: Start HTTP server
+    // ── Configuration ───────────────────────────────────────────────────
+    let config = Config::from_env()?;
+    let config = Arc::new(config);
+    tracing::info!("Configuration loaded");
 
-    tracing::info!("OneClick.ai backend started");
+    // ── Database ────────────────────────────────────────────────────────
+    let db_pool = db::create_pool(&config.database_url).await?;
+    db::run_migrations(&db_pool).await?;
+
+    // ── Redis ───────────────────────────────────────────────────────────
+    let redis_pool = redis::create_pool(&config.redis_url)?;
+
+    // ── Prometheus metrics ──────────────────────────────────────────────
+    let metrics_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .expect("Failed to install Prometheus recorder");
+
+    // ── Orchestrator ────────────────────────────────────────────────────
+    let runtime = DockerRuntime::new()?;
+    let orchestrator = Arc::new(Orchestrator::new(Arc::new(runtime), db_pool.clone()));
+    tracing::info!("Orchestrator initialized");
+
+    // ── LLM Proxy ───────────────────────────────────────────────────────
+    let llm_proxy = Arc::new(LlmProxy::new(&config, db_pool.clone()));
+
+    // ── App state ───────────────────────────────────────────────────────
+    let state = AppState {
+        config: config.clone(),
+        db: db_pool.clone(),
+        redis: redis_pool,
+        orchestrator: orchestrator.clone(),
+        llm_proxy,
+        metrics_handle,
+    };
+
+    // ── Axum router ─────────────────────────────────────────────────────
+    let router = oneclick_api::create_router(state);
+
+    // ── Background tasks ────────────────────────────────────────────────
+    let scheduler = Scheduler::new(
+        db_pool.clone(),
+        orchestrator.clone(),
+        Duration::from_secs(60),
+    );
+    tokio::spawn(async move {
+        if let Err(e) = scheduler.run().await {
+            tracing::error!(error = %e, "Scheduler exited with error");
+        }
+    });
+
+    let monitor = IdleMonitor::new(
+        db_pool.clone(),
+        orchestrator.clone(),
+        config.idle_timeout_minutes,
+    );
+    tokio::spawn(async move {
+        if let Err(e) = monitor.run().await {
+            tracing::error!(error = %e, "Idle monitor exited with error");
+        }
+    });
+
+    // ── Start HTTP server ───────────────────────────────────────────────
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    tracing::info!("Listening on http://0.0.0.0:8080");
+    tracing::info!("Swagger UI at http://localhost:8080/swagger-ui/");
+
+    axum::serve(listener, router).await?;
 
     Ok(())
 }
