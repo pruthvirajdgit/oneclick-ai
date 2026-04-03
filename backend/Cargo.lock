@@ -1883,6 +1883,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2",
+ "axum 0.8.8",
  "chrono",
  "deadpool-redis",
  "dotenvy",
