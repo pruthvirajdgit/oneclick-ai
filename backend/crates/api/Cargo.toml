@@ -28,3 +28,4 @@ redis.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 cron.workspace = true
+reqwest.workspace = true
