@@ -15,12 +15,16 @@ Architectural Decision Records (ADRs) — why we chose what we chose.
 - [ADR-006: No LiteLLM](decisions/006-no-litellm.md)
 - [ADR-007: No Firecracker in Phase 1](decisions/007-no-firecracker-phase1.md)
 - [ADR-008: Free Tier via Groq + OpenRouter](decisions/008-free-tier-providers.md)
+- [ADR-009: Testing Strategy](decisions/009-testing-strategy.md)
+- [ADR-010: Telemetry](decisions/010-telemetry.md)
 
 ## Phase 1
 - [Build Specification](phase1/build-spec.md) — What we're building, module by module
 - [API Reference](phase1/api-reference.md) — All endpoints
 - [Database Schema](phase1/database-schema.md) — PostgreSQL tables
 - [Deployment Guide](phase1/deployment.md) — Local dev + Azure production
+- [Testing Guide](phase1/testing.md) — Unit + integration tests, CI config
+- [Telemetry Guide](phase1/telemetry.md) — Logs, metrics, monitoring
 
 ## Future Phases
 - Phase 2: CRIU checkpoint/restore (~1-2s cold starts)
