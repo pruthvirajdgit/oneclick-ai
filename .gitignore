@@ -21,3 +21,10 @@ dist/
 
 # Logs
 *.log
+
+# Rust
+backend/target/
+
+# Docker volumes
+pgdata/
+redisdata/
