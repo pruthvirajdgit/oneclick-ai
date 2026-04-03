@@ -1804,12 +1804,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "oneclick-shared",
  "reqwest",
  "serde",
  "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1856,9 +1860,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bollard",
+ "chrono",
+ "dashmap",
  "oneclick-shared",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "tracing",
  "uuid",
