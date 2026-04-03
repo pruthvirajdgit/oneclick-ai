@@ -13,3 +13,4 @@ anyhow.workspace = true
 async-trait.workspace = true
 bollard.workspace = true
 reqwest.workspace = true
+uuid.workspace = true
