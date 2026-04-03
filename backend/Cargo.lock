@@ -1796,7 +1796,9 @@ name = "oneclick-backend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.8.8",
+ "deadpool-redis",
  "metrics-exporter-prometheus",
  "oneclick-agent-tools",
  "oneclick-api",
@@ -1808,9 +1810,13 @@ dependencies = [
  "oneclick-scheduler",
  "oneclick-shared",
  "oneclick-webhook-receiver",
+ "serde_json",
+ "sqlx",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

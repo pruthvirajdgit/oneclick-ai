@@ -64,6 +64,9 @@ name = "oneclick-backend"
 version.workspace = true
 edition.workspace = true
 
+[features]
+integration = []
+
 [[bin]]
 name = "oneclick-backend"
 path = "src/main.rs"
@@ -85,3 +88,15 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 metrics-exporter-prometheus.workspace = true
+
+[dev-dependencies]
+oneclick-shared = { path = "crates/shared" }
+oneclick-api = { path = "crates/api" }
+oneclick-orchestrator = { path = "crates/orchestrator" }
+oneclick-llm-proxy = { path = "crates/llm-proxy" }
+sqlx.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tower.workspace = true
+deadpool-redis.workspace = true
+uuid.workspace = true
