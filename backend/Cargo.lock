@@ -1766,9 +1766,20 @@ dependencies = [
  "anyhow",
  "axum 0.8.8",
  "axum-extra",
+ "chrono",
+ "cron",
+ "deadpool-redis",
+ "jsonwebtoken",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "oneclick-llm-proxy",
+ "oneclick-notifications",
+ "oneclick-orchestrator",
  "oneclick-shared",
+ "redis",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "tower",
  "tower-http",
@@ -1834,11 +1845,15 @@ name = "oneclick-monitor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "metrics",
  "metrics-exporter-prometheus",
+ "oneclick-orchestrator",
  "oneclick-shared",
+ "sqlx",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1846,12 +1861,15 @@ name = "oneclick-notifications"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "oneclick-shared",
  "reqwest",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1879,10 +1897,14 @@ dependencies = [
  "anyhow",
  "chrono",
  "cron",
+ "oneclick-orchestrator",
  "oneclick-shared",
+ "reqwest",
  "serde",
+ "sqlx",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
