@@ -1,0 +1,13 @@
+[package]
+name = "oneclick-message-queue"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oneclick-shared = { path = "../shared" }
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+dashmap.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "oneclick-scheduler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oneclick-shared = { path = "../shared" }
+tokio.workspace = true
+tracing.workspace = true
+cron.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+serde.workspace = true

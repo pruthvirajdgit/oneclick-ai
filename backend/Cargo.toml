@@ -1,0 +1,85 @@
+[workspace]
+members = [
+    "crates/shared",
+    "crates/api",
+    "crates/orchestrator",
+    "crates/llm-proxy",
+    "crates/scheduler",
+    "crates/monitor",
+    "crates/notifications",
+    "crates/webhook-receiver",
+    "crates/message-queue",
+    "crates/agent-tools",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+# HTTP framework
+axum = { version = "0.8", features = ["ws", "json"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+# Redis
+deadpool-redis = "0.18"
+redis = { version = "0.27", features = ["tokio-comp"] }
+# Docker
+bollard = "0.18"
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Auth
+jsonwebtoken = "9"
+argon2 = "0.5"
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+# Cron
+cron = "0.13"
+# OpenAPI
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+# Logging & metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+# Utils
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+anyhow = "1"
+thiserror = "2"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+async-trait = "0.1"
+dashmap = "6"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[package]
+name = "oneclick-backend"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "oneclick-backend"
+path = "src/main.rs"
+
+[dependencies]
+oneclick-shared = { path = "crates/shared" }
+oneclick-api = { path = "crates/api" }
+oneclick-orchestrator = { path = "crates/orchestrator" }
+oneclick-llm-proxy = { path = "crates/llm-proxy" }
+oneclick-scheduler = { path = "crates/scheduler" }
+oneclick-monitor = { path = "crates/monitor" }
+oneclick-notifications = { path = "crates/notifications" }
+oneclick-webhook-receiver = { path = "crates/webhook-receiver" }
+oneclick-message-queue = { path = "crates/message-queue" }
+oneclick-agent-tools = { path = "crates/agent-tools" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
