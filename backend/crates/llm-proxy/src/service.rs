@@ -192,7 +192,7 @@ impl LlmProxy {
         }
 
         let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM usage WHERE user_id = $1 AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')",
+            "SELECT COUNT(*) FROM usage WHERE user_id = $1 AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'",
         )
         .bind(user_id)
         .fetch_one(&self.db)

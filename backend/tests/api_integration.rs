@@ -28,7 +28,7 @@ use common::TestApp;
 /// that matches docker-compose.
 async fn setup_db() -> PgPool {
     let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://oneclick:devpassword@localhost:5432/oneclick_test".into());
+        .unwrap_or_else(|_| "postgres://oneclick:devpassword@localhost:5432/oneclick".into());
 
     let pool = PgPool::connect(&url)
         .await
