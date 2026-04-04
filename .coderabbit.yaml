@@ -1,0 +1,57 @@
+# CodeRabbit Configuration
+# Docs: https://docs.coderabbit.ai/guides/configure-coderabbit
+
+language: en-US
+
+reviews:
+  # Auto-review every PR
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  # Review profile: assertive catches more issues
+  profile: assertive
+
+  # What to focus on
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+
+  path_instructions:
+    - path: "backend/crates/**/*.rs"
+      instructions: |
+        This is a Rust backend for a multi-tenant AI agent SaaS platform.
+        Review for: idiomatic Rust, proper error handling with AppError/AppResult,
+        async correctness, SQL injection safety, ownership/borrowing best practices,
+        and consistency with the existing crate architecture.
+        The project uses axum 0.8, sqlx, tokio, and serde.
+
+    - path: "backend/migrations/**"
+      instructions: |
+        Review SQL migrations for: correctness, indexing strategy, foreign key
+        constraints, and backward compatibility. Tables use UUID primary keys
+        and timestamptz for time columns.
+
+    - path: ".context_bank/**"
+      instructions: |
+        These are AI-readable context documents. Review for accuracy, completeness,
+        and consistency with the actual codebase. Flag any outdated information.
+
+    - path: "docker-compose*.yml"
+      instructions: |
+        Review for security (no secrets in compose files), networking correctness,
+        volume mounts, and health check configuration.
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: auto
+  issues:
+    scope: auto
+  pull_requests:
+    scope: auto
