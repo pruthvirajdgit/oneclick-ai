@@ -119,31 +119,30 @@ impl LlmProxy {
 
                 match self.try_provider(provider, &req).await {
                     Ok(response) => {
-                        if let Some(usage) = &response.usage {
-                            tracing::info!(
-                                provider = %provider.name,
-                                model = %response.model,
-                                prompt_tokens = usage.prompt_tokens,
-                                completion_tokens = usage.completion_tokens,
-                                total_tokens = usage.total_tokens,
-                                "Chat completion succeeded"
-                            );
-                            self.log_usage(
-                                user_id,
-                                agent_id,
-                                &response.model,
-                                &provider.name,
-                                usage.prompt_tokens,
-                                usage.completion_tokens,
-                            )
-                            .await?;
-                        } else {
-                            tracing::info!(
-                                provider = %provider.name,
-                                model = %response.model,
-                                "Chat completion succeeded (no usage data)"
-                            );
-                        }
+                        let (tokens_in, tokens_out) = response
+                            .usage
+                            .as_ref()
+                            .map(|u| (u.prompt_tokens, u.completion_tokens))
+                            .unwrap_or((0, 0));
+
+                        tracing::info!(
+                            provider = %provider.name,
+                            model = %response.model,
+                            prompt_tokens = tokens_in,
+                            completion_tokens = tokens_out,
+                            "Chat completion succeeded"
+                        );
+
+                        // Always log usage so rate-limit accounting is accurate.
+                        self.log_usage(
+                            user_id,
+                            agent_id,
+                            &response.model,
+                            &provider.name,
+                            tokens_in,
+                            tokens_out,
+                        )
+                        .await?;
 
                         return Ok(response);
                     }

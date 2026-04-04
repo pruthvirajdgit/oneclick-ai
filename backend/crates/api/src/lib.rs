@@ -11,9 +11,10 @@ pub mod swagger;
 
 use axum::routing::get;
 use axum::Router;
-use axum::http::{HeaderValue, Method};
+use axum::http::{HeaderValue, Method, Request};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
+use tracing::Span;
 
 use crate::state::AppState;
 
@@ -70,7 +71,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_endpoint))
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        // Redact query strings to avoid leaking JWT tokens from WebSocket URLs.
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    uri_path = %request.uri().path(),
+                )
+            }),
+        )
         .with_state(state)
 }
 

@@ -19,6 +19,7 @@ use oneclick_shared::config::Config;
 use oneclick_shared::errors::{AppError, AppResult};
 use oneclick_shared::models::agent::Agent;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 /// Core abstraction for agent container runtimes.
 ///
@@ -64,9 +65,12 @@ impl DockerRuntime {
     }
 
     /// Build the container name from user ID and agent ID to avoid collisions.
-    fn container_name(agent: &Agent) -> String {
-        let user_short = &agent.user_id.to_string()[..8];
-        let agent_short = &agent.id.to_string()[..8];
+    ///
+    /// This is a utility used by the orchestrator service when inserting a new
+    /// Agent row. The `create_agent` impl reads back from `agent.container_name`.
+    pub fn container_name(user_id: &Uuid, agent_id: &Uuid) -> String {
+        let user_short = &user_id.to_string()[..8];
+        let agent_short = &agent_id.to_string()[..8];
         format!("agent-{user_short}-{agent_short}")
     }
 }
@@ -103,7 +107,12 @@ fn cpu_to_nano(cpu: f64) -> i64 {
 #[async_trait]
 impl AgentRuntime for DockerRuntime {
     async fn create_agent(&self, agent: &Agent, config: &Config) -> AppResult<String> {
-        let name = Self::container_name(agent);
+        // Use the container name stored on the Agent row (set by the orchestrator)
+        // to maintain a single source of truth.
+        let name = agent
+            .container_name
+            .as_deref()
+            .ok_or_else(|| AppError::Internal("Agent has no container_name set".into()))?;
         let memory = parse_memory_limit(&config.agent_memory_limit)?;
         let nano_cpus = cpu_to_nano(config.agent_cpu_limit);
 

@@ -17,7 +17,7 @@ use oneclick_shared::config::Config;
 use oneclick_shared::errors::{AppError, AppResult};
 use oneclick_shared::models::agent::{Agent, AgentStatus};
 
-use crate::runtime::AgentRuntime;
+use crate::runtime::{AgentRuntime, DockerRuntime};
 
 /// Maximum number of health-check attempts after waking an agent.
 const HEALTH_CHECK_RETRIES: u32 = 5;
@@ -89,7 +89,7 @@ impl Orchestrator {
         }
 
         let agent_id = Uuid::new_v4();
-        let container_name = format!("agent-{}-{}", &user_id.to_string()[..8], &agent_id.to_string()[..8]);
+        let container_name = DockerRuntime::container_name(&user_id, &agent_id);
 
         // --- insert DB record ---
         let agent: Agent = sqlx::query_as::<_, Agent>(
