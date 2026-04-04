@@ -111,11 +111,17 @@ impl NotificationService {
     /// Mark a single notification as read. Only succeeds if the notification
     /// belongs to the given user.
     pub async fn mark_read(&self, notification_id: i64, user_id: Uuid) -> AppResult<()> {
-        sqlx::query("UPDATE notifications SET read = TRUE WHERE id = $1 AND user_id = $2")
+        let result = sqlx::query("UPDATE notifications SET read = TRUE WHERE id = $1 AND user_id = $2")
             .bind(notification_id)
             .bind(user_id)
             .execute(&self.db)
             .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(oneclick_shared::errors::AppError::NotFound(
+                "Notification not found or not owned by user".into(),
+            ));
+        }
 
         tracing::debug!(notification_id, %user_id, "notification marked as read");
         Ok(())

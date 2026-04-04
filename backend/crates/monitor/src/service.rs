@@ -135,7 +135,7 @@ impl IdleMonitor {
     /// Return all running agents that have been idle longer than
     /// `idle_timeout`.
     async fn find_idle_agents(&self) -> anyhow::Result<Vec<Agent>> {
-        let timeout_minutes = self.idle_timeout.as_secs() as i64 / 60;
+        let timeout_minutes = (self.idle_timeout.as_secs() / 60) as i64;
 
         let agents: Vec<Agent> = sqlx::query_as(
             "SELECT * FROM agents \
@@ -143,7 +143,7 @@ impl IdleMonitor {
              AND (last_active IS NULL \
                   OR last_active < NOW() - make_interval(mins => $1))",
         )
-        .bind(timeout_minutes as f64)
+        .bind(timeout_minutes)
         .fetch_all(&self.db)
         .await
         .context("Failed to query idle agents")?;
@@ -188,7 +188,7 @@ impl IdleMonitor {
              AND next_run_at < NOW() + make_interval(mins => $2)",
         )
         .bind(agent_id)
-        .bind(UPCOMING_JOB_WINDOW_MINUTES as f64)
+        .bind(UPCOMING_JOB_WINDOW_MINUTES)
         .fetch_one(&self.db)
         .await
         .context("Failed to check upcoming scheduled jobs")?;

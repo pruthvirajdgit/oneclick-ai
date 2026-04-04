@@ -2,7 +2,7 @@
 //!
 //! Provides a [`MockRuntime`] that fakes Docker operations and a
 //! [`TestApp`] builder that wires up the full Axum router against
-//! a real PostgreSQL database (via testcontainers).
+//! a real PostgreSQL database (started via `docker compose up postgres`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -82,6 +82,7 @@ static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 ///
 /// Build with [`TestApp::new`], then use [`TestApp::request`] or the
 /// convenience methods ([`get`], [`post`], [`delete`]) to exercise endpoints.
+/// Requires an externally running PostgreSQL instance (e.g., via `docker compose up postgres`).
 #[allow(dead_code)]
 pub struct TestApp {
     pub router: Router,
