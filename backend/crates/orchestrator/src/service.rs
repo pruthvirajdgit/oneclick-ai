@@ -74,35 +74,30 @@ impl Orchestrator {
         model: &str,
         config: &Config,
     ) -> AppResult<Agent> {
-        // --- capacity check ---
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agents")
-            .fetch_one(&self.db)
-            .await?;
-
-        if count >= config.max_agents as i64 {
-            warn!(
-                current = count,
-                max = config.max_agents,
-                "Agent capacity reached"
-            );
-            return Err(AppError::CapacityReached);
-        }
-
         let agent_id = Uuid::new_v4();
         let container_name = DockerRuntime::container_name(&user_id, &agent_id);
 
-        // --- insert DB record ---
-        let agent: Agent = sqlx::query_as::<_, Agent>(
+        // Atomically check capacity and insert in a single statement.
+        // If the count is already at the limit, no row is inserted.
+        let agent: Option<Agent> = sqlx::query_as::<_, Agent>(
             "INSERT INTO agents (id, user_id, container_name, status, model) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING *",
+             SELECT $1, $2, $3, $4, $5 \
+             WHERE (SELECT COUNT(*) FROM agents) < $6 \
+             RETURNING *",
         )
         .bind(agent_id)
         .bind(user_id)
         .bind(&container_name)
         .bind(AgentStatus::Creating)
         .bind(model)
-        .fetch_one(&self.db)
+        .bind(config.max_agents as i64)
+        .fetch_optional(&self.db)
         .await?;
+
+        let agent = agent.ok_or_else(|| {
+            warn!(max = config.max_agents, "Agent capacity reached");
+            AppError::CapacityReached
+        })?;
 
         info!(agent_id = %agent.id, user_id = %user_id, "Agent record created");
 
@@ -231,9 +226,10 @@ impl Orchestrator {
             .execute(&self.db)
             .await?;
 
-        // Drop the per-agent lock entry
-        drop(_guard);
-        self.locks.remove(&agent_id);
+        // Note: we intentionally keep the per-agent lock entry in the DashMap.
+        // Removing it while other tasks may hold a clone of the Arc<Mutex> would
+        // break serialization guarantees. Lock entries are lightweight and the
+        // number of destroyed agents over a process lifetime is bounded.
 
         info!(agent_id = %agent_id, "Agent destroyed");
         Ok(())
