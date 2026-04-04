@@ -94,9 +94,11 @@ oneclick-shared = { path = "crates/shared" }
 oneclick-api = { path = "crates/api" }
 oneclick-orchestrator = { path = "crates/orchestrator" }
 oneclick-llm-proxy = { path = "crates/llm-proxy" }
+oneclick-notifications = { path = "crates/notifications" }
 sqlx.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 tower.workspace = true
 deadpool-redis.workspace = true
 uuid.workspace = true
+metrics-exporter-prometheus.workspace = true

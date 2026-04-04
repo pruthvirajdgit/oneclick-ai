@@ -18,3 +18,4 @@ jsonwebtoken.workspace = true
 argon2.workspace = true
 dotenvy.workspace = true
 tracing.workspace = true
+cron.workspace = true

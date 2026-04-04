@@ -1928,6 +1928,7 @@ dependencies = [
  "argon2",
  "axum 0.8.8",
  "chrono",
+ "cron",
  "deadpool-redis",
  "dotenvy",
  "jsonwebtoken",

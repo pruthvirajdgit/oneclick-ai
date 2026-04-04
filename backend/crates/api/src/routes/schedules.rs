@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use oneclick_shared::errors::{AppError, AppResult};
 use oneclick_shared::models::schedule::{CreateScheduleRequest, ScheduleResponse, ScheduledJob};
+use oneclick_shared::cron::normalise_cron;
 
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
@@ -54,8 +55,10 @@ async fn create_schedule(
         "Creating schedule"
     );
 
-    // Validate cron expression and compute next_run_at.
-    let schedule = cron::Schedule::from_str(&req.cron_expr)
+    // Normalize cron expression (5-field → 7-field) and validate.
+    let normalised = normalise_cron(&req.cron_expr)
+        .map_err(|e| AppError::BadRequest(e))?;
+    let schedule = cron::Schedule::from_str(&normalised)
         .map_err(|e| AppError::BadRequest(format!("Invalid cron expression: {e}")))?;
 
     let next_run_at = schedule

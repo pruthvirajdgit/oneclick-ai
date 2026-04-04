@@ -1,20 +1,23 @@
 //! Internal endpoints called by agent containers.
 //!
-//! These routes use header-based auth (`X-Agent-Id`, `X-User-Id`) rather than
-//! JWT tokens, because they are invoked by sandboxed agent processes.
+//! These routes use header-based auth (`X-Agent-Id`, `X-User-Id`, `X-Internal-Secret`)
+//! rather than JWT tokens, because they are invoked by sandboxed agent processes.
+//! The shared secret prevents external callers from impersonating agents.
 
-use axum::extract::{FromRequestParts, State};
+use axum::extract::{FromRef, FromRequestParts, Path, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
+use serde::Deserialize;
 use std::str::FromStr;
 use uuid::Uuid;
 
+use oneclick_shared::cron::normalise_cron;
 use oneclick_shared::errors::{AppError, AppResult};
-use oneclick_shared::models::notification::{CreateNotificationRequest, Notification};
-use oneclick_shared::models::schedule::{CreateScheduleRequest, ScheduleResponse, ScheduledJob};
+use oneclick_shared::models::notification::CreateNotificationRequest;
+use oneclick_shared::models::schedule::{ScheduleResponse, ScheduledJob};
 
 use oneclick_llm_proxy::ChatCompletionRequest;
 
@@ -22,10 +25,11 @@ use crate::middleware::rate_limit::check_rate_limit;
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
-// Internal auth extractor (header-based)
+// Internal auth extractor (header-based + shared secret)
 // ---------------------------------------------------------------------------
 
-/// Internal authentication extracted from `X-Agent-Id` and `X-User-Id` headers.
+/// Internal authentication extracted from `X-Agent-Id`, `X-User-Id`, and
+/// `X-Internal-Secret` headers.
 pub struct InternalAuth {
     pub agent_id: Uuid,
     pub user_id: Uuid,
@@ -34,10 +38,24 @@ pub struct InternalAuth {
 impl<S> FromRequestParts<S> for InternalAuth
 where
     S: Send + Sync,
+    AppState: axum::extract::FromRef<S>,
 {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+
+        // Validate shared secret to prevent external impersonation.
+        let secret = parts
+            .headers
+            .get("x-internal-secret")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if secret != app_state.config.internal_secret {
+            return Err(AppError::Unauthorized);
+        }
+
         let agent_id = parts
             .headers
             .get("x-agent-id")
@@ -54,6 +72,17 @@ where
 
         Ok(InternalAuth { agent_id, user_id })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Internal request types (separate from public API types)
+// ---------------------------------------------------------------------------
+
+/// Schedule creation request from an agent (no `agent_id` — inferred from headers).
+#[derive(Debug, Deserialize)]
+pub struct InternalCreateScheduleRequest {
+    pub cron_expr: String,
+    pub task_message: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -82,23 +111,24 @@ pub async fn llm_proxy(
         .await?
         .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-    // Redis-based fast rate check.
-    check_rate_limit(
-        &state.redis,
-        internal.user_id,
-        state.config.free_tier_daily_limit,
-    )
-    .await?;
-
-    // Provider-level rate check (DB-based).
-    state
-        .llm_proxy
-        .check_rate_limit(
+    // Pro-tier users bypass rate limits.
+    if tier.0 != "pro" {
+        check_rate_limit(
+            &state.redis,
             internal.user_id,
-            &tier.0,
             state.config.free_tier_daily_limit,
         )
         .await?;
+
+        state
+            .llm_proxy
+            .check_rate_limit(
+                internal.user_id,
+                &tier.0,
+                state.config.free_tier_daily_limit,
+            )
+            .await?;
+    }
 
     let response = state
         .llm_proxy
@@ -112,7 +142,7 @@ pub async fn llm_proxy(
 pub async fn create_internal_schedule(
     State(state): State<AppState>,
     internal: InternalAuth,
-    Json(req): Json<CreateScheduleRequest>,
+    Json(req): Json<InternalCreateScheduleRequest>,
 ) -> AppResult<impl IntoResponse> {
     tracing::info!(
         user_id = %internal.user_id,
@@ -121,8 +151,10 @@ pub async fn create_internal_schedule(
         "Internal schedule creation"
     );
 
-    // Validate cron and compute next_run_at.
-    let schedule = cron::Schedule::from_str(&req.cron_expr)
+    // Normalize cron expression (5-field → 7-field) and validate.
+    let normalised = normalise_cron(&req.cron_expr)
+        .map_err(|e| AppError::BadRequest(e))?;
+    let schedule = cron::Schedule::from_str(&normalised)
         .map_err(|e| AppError::BadRequest(format!("Invalid cron expression: {e}")))?;
 
     let next_run_at = schedule
@@ -150,6 +182,45 @@ pub async fn create_internal_schedule(
     Ok((StatusCode::CREATED, Json(ScheduleResponse::from(job))))
 }
 
+/// `GET /internal/schedules` — Agent lists its own schedules.
+pub async fn list_internal_schedules(
+    State(state): State<AppState>,
+    internal: InternalAuth,
+) -> AppResult<impl IntoResponse> {
+    let jobs = sqlx::query_as::<_, ScheduledJob>(
+        "SELECT * FROM scheduled_jobs WHERE agent_id = $1 AND user_id = $2 ORDER BY created_at DESC",
+    )
+    .bind(internal.agent_id)
+    .bind(internal.user_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let responses: Vec<ScheduleResponse> = jobs.into_iter().map(ScheduleResponse::from).collect();
+    Ok(Json(responses))
+}
+
+/// `DELETE /internal/schedules/{id}` — Agent deletes one of its own schedules.
+pub async fn delete_internal_schedule(
+    State(state): State<AppState>,
+    internal: InternalAuth,
+    Path(id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let result = sqlx::query(
+        "DELETE FROM scheduled_jobs WHERE id = $1 AND agent_id = $2 AND user_id = $3",
+    )
+    .bind(id)
+    .bind(internal.agent_id)
+    .bind(internal.user_id)
+    .execute(&state.db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound(format!("Schedule {id} not found")));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /internal/notifications` — Agent sends a notification to its user.
 pub async fn create_internal_notification(
     State(state): State<AppState>,
@@ -163,14 +234,11 @@ pub async fn create_internal_notification(
         "Internal notification creation"
     );
 
-    let notification = sqlx::query_as::<_, Notification>(
-        "INSERT INTO notifications (user_id, title, body) VALUES ($1, $2, $3) RETURNING *",
-    )
-    .bind(internal.user_id)
-    .bind(&req.title)
-    .bind(&req.body)
-    .fetch_one(&state.db)
-    .await?;
+    // Use NotificationService for proper DB insert + real-time broadcast.
+    let notification = state
+        .notification_service
+        .create(internal.user_id, &req.title, &req.body)
+        .await?;
 
     tracing::info!(notification_id = notification.id, "Notification created");
 

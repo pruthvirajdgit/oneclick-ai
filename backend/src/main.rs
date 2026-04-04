@@ -11,12 +11,13 @@ use oneclick_shared::redis;
 use oneclick_api::state::AppState;
 use oneclick_llm_proxy::LlmProxy;
 use oneclick_monitor::IdleMonitor;
+use oneclick_notifications::NotificationService;
 use oneclick_orchestrator::{DockerRuntime, Orchestrator};
 use oneclick_scheduler::Scheduler;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize structured logging (JSON in prod, pretty in dev)
+    // Initialize structured logging (JSON format for machine consumption)
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -52,6 +53,9 @@ async fn main() -> anyhow::Result<()> {
     // ── LLM Proxy ───────────────────────────────────────────────────────
     let llm_proxy = Arc::new(LlmProxy::new(&config, db_pool.clone()));
 
+    // ── Notification Service ────────────────────────────────────────────
+    let notification_service = Arc::new(NotificationService::new(db_pool.clone()));
+
     // ── App state ───────────────────────────────────────────────────────
     let state = AppState {
         config: config.clone(),
@@ -59,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         redis: redis_pool,
         orchestrator: orchestrator.clone(),
         llm_proxy,
+        notification_service,
         metrics_handle,
     };
 

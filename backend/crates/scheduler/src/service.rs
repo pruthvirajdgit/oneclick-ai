@@ -123,7 +123,7 @@ impl Scheduler {
         })?;
 
         // 2. POST the task message to the agent's chat endpoint.
-        let url = format!("http://agent-{container_name}:3000/api/chat");
+        let url = format!("http://{container_name}:3000/api/chat");
 
         let response = self
             .http_client

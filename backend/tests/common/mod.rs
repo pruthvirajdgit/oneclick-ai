@@ -5,7 +5,7 @@
 //! a real PostgreSQL database (via testcontainers).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 
@@ -66,13 +66,17 @@ impl AgentRuntime for MockRuntime {
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
 use oneclick_api::state::AppState;
 use oneclick_llm_proxy::LlmProxy;
+use oneclick_notifications::NotificationService;
 use oneclick_orchestrator::Orchestrator;
+
+/// Global Prometheus recorder — installed exactly once across all tests.
+static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 
 /// A test harness wrapping the full Axum router.
 ///
@@ -103,11 +107,13 @@ impl TestApp {
             free_tier_daily_limit: 50,
             idle_timeout_minutes: 15,
             docker_network: "test-net".into(),
+            internal_secret: "test-internal-secret".into(),
         });
 
         let runtime = MockRuntime::new();
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(runtime), db.clone()));
         let llm_proxy = Arc::new(LlmProxy::new(&config, db.clone()));
+        let notification_service = Arc::new(NotificationService::new(db.clone()));
 
         // Redis pool — will fail if actually used. Basic CRUD tests skip Redis.
         let redis_cfg = deadpool_redis::Config::from_url("redis://127.0.0.1:6379");
@@ -115,9 +121,13 @@ impl TestApp {
             .create_pool(Some(deadpool_redis::Runtime::Tokio1))
             .expect("Redis pool config");
 
-        let metrics_handle = PrometheusBuilder::new()
-            .install_recorder()
-            .expect("Prometheus recorder");
+        let metrics_handle = METRICS_HANDLE
+            .get_or_init(|| {
+                PrometheusBuilder::new()
+                    .install_recorder()
+                    .expect("Prometheus recorder")
+            })
+            .clone();
 
         let state = AppState {
             config,
@@ -125,6 +135,7 @@ impl TestApp {
             redis: redis_pool,
             orchestrator,
             llm_proxy,
+            notification_service,
             metrics_handle,
         };
 

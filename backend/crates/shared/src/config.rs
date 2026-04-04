@@ -49,6 +49,10 @@ pub struct Config {
     /// Docker network name for agent containers
     #[serde(default = "default_docker_network")]
     pub docker_network: String,
+
+    /// Shared secret for internal agent→backend calls
+    #[serde(default = "default_internal_secret")]
+    pub internal_secret: String,
 }
 
 impl Config {
@@ -72,6 +76,7 @@ impl Config {
             free_tier_daily_limit: env_parse("FREE_TIER_DAILY_LIMIT", default_daily_limit()),
             idle_timeout_minutes: env_parse("IDLE_TIMEOUT_MINUTES", default_idle_timeout()),
             docker_network: env_or("DOCKER_NETWORK", &default_docker_network()),
+            internal_secret: env_or("INTERNAL_SECRET", &default_internal_secret()),
         })
     }
 }
@@ -99,3 +104,4 @@ fn default_max_agents() -> u32 { 100 }
 fn default_daily_limit() -> u32 { 50 }
 fn default_idle_timeout() -> u32 { 15 }
 fn default_docker_network() -> String { "oneclick-net".into() }
+fn default_internal_secret() -> String { "oneclick-internal-secret-change-me".into() }

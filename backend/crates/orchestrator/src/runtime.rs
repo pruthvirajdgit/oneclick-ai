@@ -63,10 +63,11 @@ impl DockerRuntime {
         Ok(Self { docker })
     }
 
-    /// Build the container name from a user ID (first 8 chars).
+    /// Build the container name from user ID and agent ID to avoid collisions.
     fn container_name(agent: &Agent) -> String {
-        let short_id = &agent.user_id.to_string()[..8];
-        format!("agent-{short_id}")
+        let user_short = &agent.user_id.to_string()[..8];
+        let agent_short = &agent.id.to_string()[..8];
+        format!("agent-{user_short}-{agent_short}")
     }
 }
 
@@ -194,29 +195,20 @@ impl AgentRuntime for DockerRuntime {
 
         let options = StopContainerOptions { t: 10 };
 
-        self.docker
-            .stop_container(container_id, Some(options))
-            .await
-            .map_err(|e| {
-                // Not-running is fine — treat as success
-                if e.to_string().contains("is not running") {
-                    warn!(container_id, "Container already stopped");
-                    return AppError::Internal(String::new());
-                }
+        match self.docker.stop_container(container_id, Some(options)).await {
+            Ok(()) => {
+                info!(container_id, "Agent container stopped");
+                Ok(())
+            }
+            Err(e) if e.to_string().contains("is not running") => {
+                warn!(container_id, "Container already stopped");
+                Ok(())
+            }
+            Err(e) => {
                 error!(container_id, error = %e, "Failed to stop container");
-                AppError::AgentUnavailable(format!("Container stop failed: {e}"))
-            })
-            .or_else(|e| {
-                // Swallow the "already stopped" sentinel
-                if e.to_string().is_empty() {
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            })?;
-
-        info!(container_id, "Agent container stopped");
-        Ok(())
+                Err(AppError::AgentUnavailable(format!("Container stop failed: {e}")))
+            }
+        }
     }
 
     async fn destroy_agent(&self, container_id: &str) -> AppResult<()> {

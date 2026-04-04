@@ -88,13 +88,15 @@ impl Orchestrator {
             return Err(AppError::CapacityReached);
         }
 
-        let container_name = format!("agent-{}", &user_id.to_string()[..8]);
+        let agent_id = Uuid::new_v4();
+        let container_name = format!("agent-{}-{}", &user_id.to_string()[..8], &agent_id.to_string()[..8]);
 
         // --- insert DB record ---
         let agent: Agent = sqlx::query_as::<_, Agent>(
-            "INSERT INTO agents (user_id, container_name, status, model) \
-             VALUES ($1, $2, $3, $4) RETURNING *",
+            "INSERT INTO agents (id, user_id, container_name, status, model) \
+             VALUES ($1, $2, $3, $4, $5) RETURNING *",
         )
+        .bind(agent_id)
         .bind(user_id)
         .bind(&container_name)
         .bind(AgentStatus::Creating)

@@ -33,7 +33,12 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route(
             "/internal/schedules",
-            axum::routing::post(routes::internal::create_internal_schedule),
+            axum::routing::get(routes::internal::list_internal_schedules)
+                .post(routes::internal::create_internal_schedule),
+        )
+        .route(
+            "/internal/schedules/{id}",
+            axum::routing::delete(routes::internal::delete_internal_schedule),
         )
         .route(
             "/internal/notifications",

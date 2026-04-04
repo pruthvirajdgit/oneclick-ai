@@ -1,7 +1,7 @@
 //! OneClick.ai — PostgreSQL-backed message queue.
 //!
 //! Buffers messages for sleeping agents so they can be delivered once the agent
-//! wakes up. Messages are stored in the `queued_messages` table and marked as
+//! wakes up. Messages are stored in the `message_queue` table and marked as
 //! delivered upon successful handoff.
 
 use chrono::Utc;
@@ -34,7 +34,7 @@ impl MessageQueue {
         payload: serde_json::Value,
     ) -> AppResult<QueuedMessage> {
         let msg = sqlx::query_as::<_, QueuedMessage>(
-            r#"INSERT INTO queued_messages (agent_id, source, payload, status, created_at)
+            r#"INSERT INTO message_queue (agent_id, source, payload, status, created_at)
                VALUES ($1, $2, $3, 'pending', $4)
                RETURNING *"#,
         )
@@ -61,7 +61,7 @@ impl MessageQueue {
     /// agent wakes up and is ready to process buffered work.
     pub async fn deliver_pending(&self, agent_id: Uuid) -> AppResult<Vec<QueuedMessage>> {
         let messages = sqlx::query_as::<_, QueuedMessage>(
-            r#"UPDATE queued_messages
+            r#"UPDATE message_queue
                SET status = 'delivered'
                WHERE agent_id = $1 AND status = 'pending'
                RETURNING *"#,
@@ -82,7 +82,7 @@ impl MessageQueue {
     /// Count the number of pending messages for an agent.
     pub async fn pending_count(&self, agent_id: Uuid) -> AppResult<i64> {
         let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM queued_messages WHERE agent_id = $1 AND status = 'pending'",
+            "SELECT COUNT(*) FROM message_queue WHERE agent_id = $1 AND status = 'pending'",
         )
         .bind(agent_id)
         .fetch_one(&self.db)
