@@ -33,7 +33,7 @@ services:
       - FREE_TIER_DAILY_LIMIT=${FREE_TIER_DAILY_LIMIT:-50}
       - IDLE_TIMEOUT_MINUTES=${IDLE_TIMEOUT_MINUTES:-15}
       - DOCKER_NETWORK=oneclick-net
-      - INTERNAL_SECRET=${INTERNAL_SECRET:-dev-internal-secret-change-in-production}
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?Set INTERNAL_SECRET in .env}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
       - RUST_LOG=${RUST_LOG:-oneclick_backend=debug,tower_http=debug}
     volumes:

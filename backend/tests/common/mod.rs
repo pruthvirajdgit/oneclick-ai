@@ -108,6 +108,7 @@ impl TestApp {
             idle_timeout_minutes: 15,
             docker_network: "test-net".into(),
             internal_secret: "test-internal-secret".into(),
+            cors_allowed_origins: "*".into(),
         });
 
         let runtime = MockRuntime::new();

@@ -19,10 +19,13 @@ use crate::state::AppState;
 ///
 /// # Security Note: WebSocket Authentication via Query Parameters
 ///
-/// WebSocket handshakes do not support custom headers as per RFC 6455, so we use JWT tokens
-/// in query parameters. While this exposes tokens in logs, it's the WebSocket standard practice.
-/// Ensure log scrubbing is configured in production to redact query parameters and prevent
-/// token leakage in log aggregation systems.
+/// The browser `WebSocket` API does not support setting custom HTTP headers on the
+/// handshake request, so we pass the JWT as a `?token=` query parameter. This
+/// means the token may appear in access logs, proxy logs, and browser history.
+/// Mitigations applied:
+/// - `TraceLayer` logs only the URI path (query string redacted).
+/// - Tokens should be short-lived; consider a one-time WS ticket exchange or
+///   `Sec-WebSocket-Protocol` auth in a future iteration.
 #[derive(Deserialize)]
 pub struct ChatQuery {
     /// JWT token used for authentication (WebSocket cannot send headers).

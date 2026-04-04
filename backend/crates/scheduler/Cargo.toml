@@ -8,10 +8,7 @@ oneclick-shared = { path = "../shared" }
 oneclick-orchestrator = { path = "../orchestrator" }
 tokio.workspace = true
 tracing.workspace = true
-cron.workspace = true
-chrono.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 sqlx.workspace = true
-uuid.workspace = true
 reqwest.workspace = true
