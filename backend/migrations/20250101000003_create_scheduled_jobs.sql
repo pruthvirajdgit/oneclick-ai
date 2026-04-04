@@ -6,7 +6,7 @@ CREATE TABLE scheduled_jobs (
     task_message  TEXT NOT NULL,               -- "Check flights..."
     next_run_at   TIMESTAMPTZ NOT NULL,
     last_run_at   TIMESTAMPTZ,
-    status        TEXT NOT NULL DEFAULT 'active', -- active | paused | completed
+    status        TEXT NOT NULL DEFAULT 'active', -- active | running | paused | completed
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

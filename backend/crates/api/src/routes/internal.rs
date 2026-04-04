@@ -70,6 +70,20 @@ where
             .and_then(|v| Uuid::parse_str(v).ok())
             .ok_or_else(|| AppError::BadRequest("Missing or invalid X-User-Id header".into()))?;
 
+        // Validate that the agent belongs to the user.
+        let exists: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM agents WHERE id = $1 AND user_id = $2"
+        )
+        .bind(agent_id)
+        .bind(user_id)
+        .fetch_optional(&app_state.db)
+        .await
+        .map_err(|_| AppError::Internal("Failed to validate agent ownership".into()))?;
+
+        if exists.is_none() {
+            return Err(AppError::Unauthorized);
+        }
+
         Ok(InternalAuth { agent_id, user_id })
     }
 }

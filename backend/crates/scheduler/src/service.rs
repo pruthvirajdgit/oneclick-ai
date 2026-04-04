@@ -9,7 +9,7 @@ use sqlx::PgPool;
 use oneclick_orchestrator::Orchestrator;
 use oneclick_shared::models::schedule::ScheduledJob;
 
-use crate::cron_utils;
+use oneclick_shared::cron as cron_utils;
 
 // ── Request payload sent to the agent container ─────────────────────────
 
@@ -157,7 +157,8 @@ impl Scheduler {
         }
 
         // 3. Calculate the next run time and restore job to active.
-        let next_run = cron_utils::next_run_at(&job.cron_expr)?;
+        let next_run = cron_utils::next_run_at(&job.cron_expr)
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         sqlx::query(
             "UPDATE scheduled_jobs SET status = 'active', last_run_at = NOW(), next_run_at = $1 WHERE id = $2",

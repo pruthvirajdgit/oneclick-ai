@@ -33,6 +33,11 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(config);
     tracing::info!("Configuration loaded");
 
+    // Warn if using default internal secret
+    if config.internal_secret == "oneclick-internal-secret-change-me" {
+        tracing::warn!("⚠️  INTERNAL_SECRET is using the default value — set a unique secret for production");
+    }
+
     // ── Database ────────────────────────────────────────────────────────
     let db_pool = db::create_pool(&config.database_url).await?;
     db::run_migrations(&db_pool).await?;

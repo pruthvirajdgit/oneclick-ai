@@ -33,10 +33,13 @@ pub async fn check_rate_limit(
         .await
         .map_err(|e| AppError::Internal(format!("Redis INCR failed: {e}")))?;
 
-    // Set 24-hour TTL on first request of the day.
+    // Set TTL on first request of the day. Calculate seconds until midnight UTC.
     if count == 1 {
+        let now = Utc::now();
+        let midnight = (now + chrono::Duration::days(1)).date_naive().and_hms_opt(0, 0, 0).unwrap();
+        let seconds_until_midnight = (midnight - now.naive_utc()).num_seconds().max(1) as i64;
         let _: () = conn
-            .expire(&key, 86_400)
+            .expire(&key, seconds_until_midnight)
             .await
             .map_err(|e| AppError::Internal(format!("Redis EXPIRE failed: {e}")))?;
     }

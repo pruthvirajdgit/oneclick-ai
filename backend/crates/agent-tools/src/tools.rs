@@ -87,7 +87,8 @@ pub fn generate_tool_config(
                 "parameters": t.parameters,
                 "endpoint": format!("{}/internal/{}", backend_url,
                     match t.name.as_str() {
-                        "create_schedule" | "list_schedules" | "delete_schedule" => "schedules",
+                        "create_schedule" | "list_schedules" => "schedules",
+                        "delete_schedule" => "schedules/{schedule_id}",
                         "send_notification" => "notifications",
                         _ => "unknown"
                     }

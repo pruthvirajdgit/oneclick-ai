@@ -16,6 +16,13 @@ use oneclick_shared::models::agent::Agent;
 use crate::state::AppState;
 
 /// Query parameters for the WebSocket chat endpoint.
+///
+/// # Security Note: WebSocket Authentication via Query Parameters
+///
+/// WebSocket handshakes do not support custom headers as per RFC 6455, so we use JWT tokens
+/// in query parameters. While this exposes tokens in logs, it's the WebSocket standard practice.
+/// Ensure log scrubbing is configured in production to redact query parameters and prevent
+/// token leakage in log aggregation systems.
 #[derive(Deserialize)]
 pub struct ChatQuery {
     /// JWT token used for authentication (WebSocket cannot send headers).
