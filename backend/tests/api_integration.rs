@@ -2,12 +2,14 @@
 //!
 //! These tests require a running PostgreSQL database and are gated behind
 //! the `integration` feature so `cargo test` (unit tests) always passes.
+//! Each test truncates tables before running. Run with `--test-threads=1`
+//! to avoid inter-test interference on the shared database:
 //!
 //! ```bash
-//! # Start infra, then run integration tests:
+//! # Start infra, then run integration tests (single-threaded for DB safety):
 //! docker compose up -d postgres redis
-//! DATABASE_URL=postgres://oneclick:password@localhost:5432/oneclick \
-//!   cargo test --test api_integration --features integration
+//! DATABASE_URL=postgres://oneclick:devpassword@localhost:5432/oneclick_test \
+//!   cargo test --test api_integration --features integration -- --test-threads=1
 //! ```
 
 #![cfg(feature = "integration")]
