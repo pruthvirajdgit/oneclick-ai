@@ -121,7 +121,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
                 &OutgoingMessage {
                     msg_type: "error".into(),
                     content: None,
-                    message: Some(format!("Failed to wake agent: {e}")),
+                    message: Some("Failed to wake agent".into()),
                 },
             )
             .await;

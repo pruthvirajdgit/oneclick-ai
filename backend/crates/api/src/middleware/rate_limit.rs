@@ -10,10 +10,9 @@ use uuid::Uuid;
 
 use oneclick_shared::errors::{AppError, AppResult};
 
-/// Check (and increment) a user's daily request counter in Redis.
+/// Check a user's daily request counter in Redis (read-only, no increment).
 ///
-/// Returns `(current_count, daily_limit)` on success so callers can include
-/// rate-limit headers in the response.
+/// Returns `(current_count, daily_limit)` on success.
 ///
 /// # Errors
 ///
@@ -29,22 +28,11 @@ pub async fn check_rate_limit(
     let mut conn = redis.get().await.map_err(AppError::Redis)?;
 
     let count: i64 = conn
-        .incr(&key, 1i64)
+        .get(&key)
         .await
-        .map_err(|e| AppError::Internal(format!("Redis INCR failed: {e}")))?;
+        .unwrap_or(0);
 
-    // Set TTL on first request of the day. Calculate seconds until midnight UTC.
-    if count == 1 {
-        let now = Utc::now();
-        let midnight = (now + chrono::Duration::days(1)).date_naive().and_hms_opt(0, 0, 0).unwrap();
-        let seconds_until_midnight = (midnight - now.naive_utc()).num_seconds().max(1) as i64;
-        let _: () = conn
-            .expire(&key, seconds_until_midnight)
-            .await
-            .map_err(|e| AppError::Internal(format!("Redis EXPIRE failed: {e}")))?;
-    }
-
-    if count > daily_limit as i64 {
+    if count >= daily_limit as i64 {
         let tomorrow = (Utc::now() + chrono::Duration::days(1))
             .format("%Y-%m-%dT00:00:00Z")
             .to_string();
@@ -55,4 +43,33 @@ pub async fn check_rate_limit(
     }
 
     Ok((count, daily_limit))
+}
+
+/// Increment the user's daily request counter in Redis after a successful request.
+pub async fn increment_rate_limit(
+    redis: &deadpool_redis::Pool,
+    user_id: Uuid,
+) -> AppResult<()> {
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let key = format!("ratelimit:{user_id}:{today}");
+
+    let mut conn = redis.get().await.map_err(AppError::Redis)?;
+
+    let count: i64 = conn
+        .incr(&key, 1i64)
+        .await
+        .map_err(|e| AppError::Internal(format!("Redis INCR failed: {e}")))?;
+
+    // Set TTL on first request of the day.
+    if count == 1 {
+        let now = Utc::now();
+        let midnight = (now + chrono::Duration::days(1)).date_naive().and_hms_opt(0, 0, 0).unwrap();
+        let seconds_until_midnight = (midnight - now.naive_utc()).num_seconds().max(1) as i64;
+        let _: () = conn
+            .expire(&key, seconds_until_midnight)
+            .await
+            .map_err(|e| AppError::Internal(format!("Redis EXPIRE failed: {e}")))?;
+    }
+
+    Ok(())
 }

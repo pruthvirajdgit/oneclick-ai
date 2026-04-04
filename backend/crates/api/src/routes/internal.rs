@@ -21,7 +21,7 @@ use oneclick_shared::models::schedule::{ScheduleResponse, ScheduledJob};
 
 use oneclick_llm_proxy::ChatCompletionRequest;
 
-use crate::middleware::rate_limit::check_rate_limit;
+use crate::middleware::rate_limit::{check_rate_limit, increment_rate_limit};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -148,6 +148,12 @@ pub async fn llm_proxy(
         .llm_proxy
         .chat_completion(internal.user_id, internal.agent_id, request)
         .await?;
+
+    // Increment Redis counter only after a successful LLM call so failed
+    // requests don't consume quota.
+    if tier.0 != "pro" {
+        let _ = increment_rate_limit(&state.redis, internal.user_id).await;
+    }
 
     Ok(Json(response))
 }
