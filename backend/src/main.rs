@@ -33,14 +33,6 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(config);
     tracing::info!("Configuration loaded");
 
-    // Fail fast if using the default internal secret in production.
-    if config.internal_secret == "oneclick-internal-secret-change-me" {
-        if std::env::var("RUST_ENV").unwrap_or_default() == "production" {
-            anyhow::bail!("INTERNAL_SECRET must be set to a unique value in production");
-        }
-        tracing::warn!("⚠️  INTERNAL_SECRET is using the default value — set a unique secret for production");
-    }
-
     // ── Database ────────────────────────────────────────────────────────
     let db_pool = db::create_pool(&config.database_url).await?;
     db::run_migrations(&db_pool).await?;

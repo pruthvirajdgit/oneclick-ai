@@ -20,7 +20,7 @@ pub async fn get_usage(
     // Today's usage.
     let today: (i64, i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) \
-         FROM usage WHERE user_id = $1 AND created_at >= CURRENT_DATE",
+         FROM usage WHERE user_id = $1 AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')",
     )
     .bind(auth.0.sub)
     .fetch_one(&state.db)

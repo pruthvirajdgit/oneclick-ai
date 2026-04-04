@@ -34,7 +34,7 @@ async fn list_notifications(
 ) -> AppResult<impl IntoResponse> {
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(20).min(100);
-    let offset = (page - 1) * per_page;
+    let offset = (page as i64 - 1).saturating_mul(per_page as i64);
 
     tracing::info!(
         user_id = %auth.0.sub,
@@ -49,7 +49,7 @@ async fn list_notifications(
     )
     .bind(auth.0.sub)
     .bind(per_page as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(&state.db)
     .await?;
 
