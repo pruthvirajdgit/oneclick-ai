@@ -5,15 +5,18 @@
 //   ONECLICK_BACKEND_URL - Backend API base URL (default: http://backend:8080)
 //   ONECLICK_AGENT_ID - This agent's UUID
 //   ONECLICK_USER_ID - Owning user's UUID
+//   ONECLICK_INTERNAL_SECRET - Shared secret for internal API auth
 
 const BACKEND_URL = process.env.ONECLICK_BACKEND_URL || 'http://backend:8080';
 const AGENT_ID = process.env.ONECLICK_AGENT_ID || '';
 const USER_ID = process.env.ONECLICK_USER_ID || '';
+const INTERNAL_SECRET = process.env.ONECLICK_INTERNAL_SECRET || '';
 
 const headers = {
   'Content-Type': 'application/json',
   'X-Agent-Id': AGENT_ID,
   'X-User-Id': USER_ID,
+  'X-Internal-Secret': INTERNAL_SECRET,
 };
 
 // Tool: create_schedule

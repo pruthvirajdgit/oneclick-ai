@@ -81,6 +81,13 @@ impl Scheduler {
                     error    = %e,
                     "Failed to execute scheduled job"
                 );
+                // Restore to active so it can be retried next tick.
+                let _ = sqlx::query(
+                    "UPDATE scheduled_jobs SET status = 'active' WHERE id = $1",
+                )
+                .bind(job.id)
+                .execute(&self.db)
+                .await;
             }
         }
 
@@ -90,15 +97,21 @@ impl Scheduler {
     // ── Query ───────────────────────────────────────────────────────────
 
     /// Fetch up to 50 active jobs whose `next_run_at` is in the past.
+    /// Uses UPDATE...RETURNING to atomically claim jobs, preventing concurrent
+    /// scheduler instances from executing the same job.
     async fn find_due_jobs(&self) -> anyhow::Result<Vec<ScheduledJob>> {
         let jobs = sqlx::query_as::<_, ScheduledJob>(
             r#"
-            SELECT id, user_id, agent_id, cron_expr, task_message,
-                   next_run_at, last_run_at, status, created_at
-            FROM scheduled_jobs
-            WHERE status = 'active' AND next_run_at <= NOW()
-            ORDER BY next_run_at ASC
-            LIMIT 50
+            UPDATE scheduled_jobs
+            SET status = 'running'
+            WHERE id IN (
+                SELECT id FROM scheduled_jobs
+                WHERE status = 'active' AND next_run_at <= NOW()
+                ORDER BY next_run_at ASC
+                LIMIT 50
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING *
             "#,
         )
         .fetch_all(&self.db)
@@ -143,11 +156,11 @@ impl Scheduler {
             );
         }
 
-        // 3. Calculate the next run time and update the database.
+        // 3. Calculate the next run time and restore job to active.
         let next_run = cron_utils::next_run_at(&job.cron_expr)?;
 
         sqlx::query(
-            "UPDATE scheduled_jobs SET last_run_at = NOW(), next_run_at = $1 WHERE id = $2",
+            "UPDATE scheduled_jobs SET status = 'active', last_run_at = NOW(), next_run_at = $1 WHERE id = $2",
         )
         .bind(next_run)
         .bind(job.id)

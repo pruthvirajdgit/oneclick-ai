@@ -9,6 +9,7 @@ use uuid::Uuid;
 #[serde(rename_all = "lowercase")]
 pub enum ScheduleStatus {
     Active,
+    Running,
     Paused,
     Completed,
 }

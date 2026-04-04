@@ -125,6 +125,9 @@ async fn login(
 }
 
 /// `POST /api/auth/refresh` — Issue a fresh JWT (requires valid current token).
+///
+/// Re-reads the user from the database to ensure the account still exists
+/// and picks up any tier or email changes.
 async fn refresh(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -133,10 +136,17 @@ async fn refresh(
 
     tracing::info!(user_id = %claims.sub, "Token refresh");
 
+    // Re-read user from DB to verify account still exists and get current state.
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        .bind(claims.sub)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+
     let token = create_token(
-        claims.sub,
-        &claims.email,
-        &claims.tier,
+        user.id,
+        &user.email,
+        &user.tier,
         &state.config.jwt_secret,
         state.config.jwt_expiry_hours,
     )
@@ -144,10 +154,6 @@ async fn refresh(
 
     Ok(Json(AuthResponse {
         token,
-        user: UserResponse {
-            id: claims.sub,
-            email: claims.email,
-            tier: claims.tier,
-        },
+        user: UserResponse::from(user),
     }))
 }

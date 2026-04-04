@@ -77,6 +77,7 @@ pub fn generate_tool_config(
     backend_url: &str,
     agent_id: &str,
     user_id: &str,
+    internal_secret: &str,
 ) -> serde_json::Value {
     serde_json::json!({
         "tools": available_tools().iter().map(|t| {
@@ -99,7 +100,8 @@ pub fn generate_tool_config(
                 },
                 "headers": {
                     "X-Agent-Id": agent_id,
-                    "X-User-Id": user_id
+                    "X-User-Id": user_id,
+                    "X-Internal-Secret": internal_secret
                 }
             })
         }).collect::<Vec<_>>()
@@ -117,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_generate_tool_config_structure() {
-        let config = generate_tool_config("http://backend:8080", "agent-1", "user-1");
+        let config = generate_tool_config("http://backend:8080", "agent-1", "user-1", "test-secret");
         let tools = config["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 4);
 
@@ -127,5 +129,6 @@ mod tests {
         assert_eq!(first["endpoint"], "http://backend:8080/internal/schedules");
         assert_eq!(first["headers"]["X-Agent-Id"], "agent-1");
         assert_eq!(first["headers"]["X-User-Id"], "user-1");
+        assert_eq!(first["headers"]["X-Internal-Secret"], "test-secret");
     }
 }
