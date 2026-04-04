@@ -11,8 +11,8 @@ pub mod swagger;
 
 use axum::routing::get;
 use axum::Router;
-use axum::http::Method;
-use tower_http::cors::CorsLayer;
+use axum::http::{HeaderValue, Method};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
@@ -46,10 +46,20 @@ pub fn create_router(state: AppState) -> Router {
             axum::routing::post(routes::internal::create_internal_notification),
         );
 
-    // Configure CORS policy with explicit method allowlist.
-    // TODO: restrict origins to config.allowed_origins in production.
+    // Configure CORS policy from config.cors_allowed_origins.
+    let allow_origin = if state.config.cors_allowed_origins == "*" {
+        AllowOrigin::any()
+    } else {
+        let origins: Vec<HeaderValue> = state
+            .config
+            .cors_allowed_origins
+            .split(',')
+            .filter_map(|o| o.trim().parse().ok())
+            .collect();
+        AllowOrigin::list(origins)
+    };
     let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
+        .allow_origin(allow_origin)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
         .allow_headers(tower_http::cors::Any);
 

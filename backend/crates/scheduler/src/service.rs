@@ -43,7 +43,10 @@ impl Scheduler {
         Self {
             db,
             orchestrator,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("Failed to build HTTP client"),
             poll_interval,
         }
     }
