@@ -228,8 +228,8 @@ impl Orchestrator {
 
         // Note: we intentionally keep the per-agent lock entry in the DashMap.
         // Removing it while other tasks may hold a clone of the Arc<Mutex> would
-        // break serialization guarantees. Lock entries are lightweight and the
-        // number of destroyed agents over a process lifetime is bounded.
+        // break serialization guarantees. Each entry is ~64 bytes. For long-running
+        // processes, periodically drain entries for agents no longer in the DB.
 
         info!(agent_id = %agent_id, "Agent destroyed");
         Ok(())
@@ -260,6 +260,33 @@ impl Orchestrator {
                 "Agent is in an error state".into(),
             )),
         }
+    }
+
+    /// Remove lock entries for agents that no longer exist in the DB.
+    ///
+    /// Call periodically (e.g., from the idle-monitor sweep) to bound
+    /// DashMap growth. Each stale entry is only ~64 bytes, so this is
+    /// a housekeeping measure rather than an urgent leak fix.
+    pub async fn purge_stale_locks(&self) -> AppResult<usize> {
+        let active_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM agents")
+                .fetch_all(&self.db)
+                .await?;
+        let active_set: std::collections::HashSet<Uuid> = active_ids.into_iter().collect();
+        let stale: Vec<Uuid> = self
+            .locks
+            .iter()
+            .filter(|entry| !active_set.contains(entry.key()))
+            .map(|entry| *entry.key())
+            .collect();
+        let count = stale.len();
+        for id in &stale {
+            self.locks.remove(id);
+        }
+        if count > 0 {
+            info!(purged = count, "Purged stale agent lock entries");
+        }
+        Ok(count)
     }
 
     // ---------------------------------------------------------------

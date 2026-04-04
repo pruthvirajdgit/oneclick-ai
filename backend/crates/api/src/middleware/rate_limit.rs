@@ -1,8 +1,9 @@
 //! Redis-backed rate limiting helpers.
 //!
 //! Uses a daily counter keyed by `ratelimit:{user_id}:{YYYY-MM-DD}` in Redis.
-//! The LLM proxy also performs its own DB-based rate check; this helper adds
-//! a fast Redis pre-check and returns rate-limit headers for the HTTP response.
+//! Provides a read-only pre-check ([`check_rate_limit`]) and a post-success
+//! increment ([`increment_rate_limit`]). The LLM proxy also performs its own
+//! DB-based rate check for consistency.
 
 use chrono::Utc;
 use redis::AsyncCommands;
