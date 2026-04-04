@@ -38,10 +38,18 @@ where
             .headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
+            .and_then(|v| {
+                // HTTP auth scheme is case-insensitive (RFC 7235).
+                let lower = v.to_lowercase();
+                if lower.starts_with("bearer ") {
+                    Some(v[7..].to_string())
+                } else {
+                    None
+                }
+            })
             .ok_or(AppError::Unauthorized)?;
 
-        let claims = validate_token(auth_header, &state.config.jwt_secret)
+        let claims = validate_token(&auth_header, &state.config.jwt_secret)
             .map_err(|_| AppError::Unauthorized)?;
 
         Ok(AuthUser(claims))
