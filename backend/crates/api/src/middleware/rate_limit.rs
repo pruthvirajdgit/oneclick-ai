@@ -27,10 +27,15 @@ pub async fn check_rate_limit(
 
     let mut conn = redis.get().await.map_err(AppError::Redis)?;
 
-    let count: i64 = conn
-        .get(&key)
-        .await
-        .unwrap_or(0);
+    // Redis GET returns nil for non-existent keys; treat that as 0.
+    let count: i64 = match conn.get::<_, Option<i64>>(&key).await {
+        Ok(Some(c)) => c,
+        Ok(None) => 0,
+        Err(e) => {
+            tracing::warn!(key = %key, error = %e, "Redis GET failed for rate limit; denying request for safety");
+            return Err(AppError::Internal(format!("Redis rate-limit check failed: {e}")));
+        }
+    };
 
     if count >= daily_limit as i64 {
         let tomorrow = (Utc::now() + chrono::Duration::days(1))

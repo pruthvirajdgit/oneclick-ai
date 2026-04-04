@@ -66,7 +66,7 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         dotenvy::dotenv().ok();
 
-        Ok(Self {
+        let config = Self {
             database_url: env_required("DATABASE_URL")?,
             redis_url: env_or("REDIS_URL", "redis://127.0.0.1:6379"),
             jwt_secret: env_required("JWT_SECRET")?,
@@ -82,7 +82,16 @@ impl Config {
             docker_network: env_or("DOCKER_NETWORK", &default_docker_network()),
             internal_secret: env_required("INTERNAL_SECRET")?,
             cors_allowed_origins: env_or("CORS_ALLOWED_ORIGINS", &default_cors_origins()),
-        })
+        };
+
+        // Validate at least one LLM provider key is set.
+        if config.groq_api_key.is_empty() && config.openrouter_api_key.is_empty() {
+            anyhow::bail!(
+                "At least one LLM provider key must be set (GROQ_API_KEY or OPENROUTER_API_KEY)"
+            );
+        }
+
+        Ok(config)
     }
 }
 

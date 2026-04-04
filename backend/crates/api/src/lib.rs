@@ -14,7 +14,6 @@ use axum::Router;
 use axum::http::{HeaderValue, Method, Request};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::Span;
 
 use crate::state::AppState;
 
