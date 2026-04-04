@@ -273,9 +273,13 @@ impl AgentRuntime for DockerRuntime {
             }
         }
 
-        // Fallback: container is running, assume healthy
-        // In production the agent image should define a HEALTHCHECK instruction.
-        info!(container_id, "Container running, no health check configured — assuming healthy");
+        // Fallback: no Docker HEALTHCHECK configured.
+        // Warn loudly — production agent images should define HEALTHCHECK.
+        warn!(
+            container_id,
+            "Container running but no HEALTHCHECK configured — assuming healthy. \
+             Define a HEALTHCHECK in the agent Dockerfile for reliable readiness detection."
+        );
         Ok(true)
     }
 }

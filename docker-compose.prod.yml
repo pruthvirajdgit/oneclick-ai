@@ -18,6 +18,10 @@ services:
       - certs:/certs
 
   backend:
+    volumes:
+      # Production: use a Docker socket proxy (e.g. Tecnativa/docker-socket-proxy)
+      # instead of direct socket access. Read-only mount as minimum mitigation.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.backend.rule=Host(`${DOMAIN:?Set DOMAIN in .env}`)"

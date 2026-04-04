@@ -48,17 +48,21 @@ async fn swagger_ui_html() -> impl IntoResponse {
     Html(SWAGGER_UI_HTML)
 }
 
-/// Embedded Swagger UI HTML using the unpkg CDN.
+/// Embedded Swagger UI HTML using pinned CDN versions.
+///
+/// Note: In production, consider serving these assets from the backend image
+/// to eliminate CDN dependency. SRI hashes would require updating on each
+/// version bump, so pinning to exact versions provides a reasonable balance.
 const SWAGGER_UI_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>OneClick.ai — API Documentation</title>
-    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css">
 </head>
 <body>
     <div id="swagger-ui"></div>
-    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
     <script>
         SwaggerUIBundle({
             url: "/api-docs/openapi.json",
