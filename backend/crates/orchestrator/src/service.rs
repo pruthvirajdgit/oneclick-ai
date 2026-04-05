@@ -20,10 +20,11 @@ use oneclick_shared::models::agent::{Agent, AgentStatus};
 use crate::runtime::{AgentRuntime, DockerRuntime};
 
 /// Maximum number of health-check attempts after waking an agent.
-const HEALTH_CHECK_RETRIES: u32 = 5;
+/// OpenClaw takes ~60-90s to start; 45 × 3s = 135s budget.
+const HEALTH_CHECK_RETRIES: u32 = 45;
 
 /// Delay between health-check attempts.
-const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Central service for managing agent lifecycles.
 ///
@@ -148,7 +149,9 @@ impl Orchestrator {
         // Start the container
         self.runtime.start_agent(container_id).await?;
 
-        // Health-check with retries
+        // Grace period: OpenClaw needs ~60s to boot. Wait for the container
+        // to be running, then give the gateway time to initialize.
+        info!(agent_id = %agent_id, "Waiting for agent container to initialize...");
         let healthy = self.poll_health(container_id).await;
 
         if !healthy {

@@ -31,8 +31,10 @@ ENV AGENT_NAME="Assistant" \
 
 EXPOSE 3000
 
-# Health check via OpenClaw CLI (WebSocket-based)
-HEALTHCHECK --interval=60s --timeout=10s --start-period=45s --retries=3 \
-  CMD openclaw health --timeout 8000 || exit 1
+# Health check — use a simple HTTP probe on the gateway port.
+# OpenClaw serves its Control UI at / once the gateway is ready.
+# start-period covers the ~60-90s boot time.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=3 \
+  CMD curl -sf http://localhost:3000/ > /dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/oneclick-entrypoint.sh"]

@@ -44,7 +44,12 @@ cat > "${CONFIG_FILE}" << CFGEOF
     "mode": "local",
     "port": ${GATEWAY_PORT},
     "bind": "lan",
-    "auth": { "mode": "token" }
+    "auth": { "mode": "token" },
+    "controlUi": {
+      // DEV/POC ONLY: wildcard origin allows any host. In production,
+      // replace with explicit origins (e.g. ["https://app.oneclick.ai"]).
+      "allowedOrigins": ["*"]
+    }
   },
   "agents": {
     "defaults": {

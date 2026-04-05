@@ -124,8 +124,19 @@ impl AgentRuntime for DockerRuntime {
         );
 
         let env = vec![
+            // Route LLM traffic through backend proxy (not directly to providers)
             "OPENROUTER_BASE_URL=http://backend:8080/internal/llm/v1".to_string(),
             format!("DEFAULT_MODEL={}", agent.model),
+            format!("AGENT_MODEL={}", agent.model),
+            format!("AGENT_NAME=agent-{}", &agent.id.to_string()[..8]),
+            "AGENT_PORT=3000".to_string(),
+            "OPENCLAW_GATEWAY_TOKEN=oneclick-internal".to_string(),
+            // Constrain Node.js heap to avoid OOM during GC spikes
+            "NODE_OPTIONS=--max-old-space-size=1280".to_string(),
+            // OpenClaw requires a non-empty API key to start its gateway,
+            // even though actual LLM calls route through our backend proxy.
+            // Always use a placeholder so containers never receive real keys.
+            "OPENROUTER_API_KEY=oneclick-proxy-routed".to_string(),
         ];
 
         let mut labels = HashMap::new();
@@ -147,6 +158,10 @@ impl AgentRuntime for DockerRuntime {
                 name: Some(RestartPolicyNameEnum::NO),
                 maximum_retry_count: None,
             }),
+            // Bind a named volume for OpenClaw state persistence across stop/start
+            binds: Some(vec![
+                format!("oneclick-agent-{name}:/home/node/.openclaw"),
+            ]),
             ..Default::default()
         };
 
@@ -158,6 +173,8 @@ impl AgentRuntime for DockerRuntime {
             networking_config: Some(NetworkingConfig {
                 endpoints_config: endpoints,
             }),
+            // OpenClaw requires a TTY to run the gateway process
+            tty: Some(true),
             ..Default::default()
         };
 
@@ -223,9 +240,20 @@ impl AgentRuntime for DockerRuntime {
     async fn destroy_agent(&self, container_id: &str) -> AppResult<()> {
         info!(container_id, "Destroying agent container");
 
+        // Inspect container to learn its name so we can remove the named volume.
+        let container_name = match self.docker.inspect_container(container_id, None).await {
+            Ok(info) => info
+                .name
+                .map(|n| n.trim_start_matches('/').to_string()),
+            Err(e) => {
+                warn!(container_id, error = %e, "Failed to inspect container before removal");
+                None
+            }
+        };
+
         let options = RemoveContainerOptions {
             force: true,
-            v: true, // remove associated volumes
+            v: true, // remove anonymous volumes
             ..Default::default()
         };
 
@@ -236,6 +264,21 @@ impl AgentRuntime for DockerRuntime {
                 error!(container_id, error = %e, "Failed to remove container");
                 AppError::Internal(format!("Container removal failed: {e}"))
             })?;
+
+        // Named volumes are not removed by `v: true` — clean up explicitly.
+        if let Some(name) = container_name {
+            let volume_name = format!("oneclick-agent-{name}");
+            if let Err(e) = self.docker.remove_volume(&volume_name, None).await {
+                warn!(
+                    container_id,
+                    volume = %volume_name,
+                    error = %e,
+                    "Failed to remove named volume (non-fatal)"
+                );
+            } else {
+                info!(container_id, volume = %volume_name, "Named volume removed");
+            }
+        }
 
         info!(container_id, "Agent container destroyed");
         Ok(())
@@ -268,7 +311,9 @@ impl AgentRuntime for DockerRuntime {
             if let Some(status) = &health.status {
                 let status_str: &str = status.as_ref();
                 let healthy = status_str == "healthy";
-                info!(container_id, status = status_str, "Docker health status");
+                if status_str != "starting" {
+                    info!(container_id, status = status_str, "Docker health status");
+                }
                 return Ok(healthy);
             }
         }

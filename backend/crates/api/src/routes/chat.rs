@@ -1,11 +1,20 @@
 //! WebSocket chat handler for real-time agent conversations.
 //!
-//! Flow: client connects → JWT validated → agent woken → messages forwarded
-//! to agent container and responses streamed back to the client.
+//! Flow: client connects → JWT validated → agent woken → message sent to
+//! agent container via `openclaw agent --json` CLI and response streamed back.
+//!
+//! OpenClaw agents use a complex WebSocket gateway protocol with device pairing.
+//! Instead of implementing that protocol, we use the `openclaw agent` CLI
+//! command via Docker exec, which handles authentication internally.
+
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
+use bollard::exec::{CreateExecOptions, StartExecResults};
+use bollard::Docker;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -51,12 +60,6 @@ struct OutgoingMessage {
     message: Option<String>,
 }
 
-/// Response payload from the agent container's HTTP chat API.
-#[derive(Deserialize)]
-struct AgentChatResponse {
-    response: String,
-}
-
 /// WebSocket chat endpoint handler.
 ///
 /// Authenticates via `?token=<jwt>` query parameter, verifies agent ownership,
@@ -95,7 +98,7 @@ pub async fn ws_handler(
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, agent_id, claims.sub)))
 }
 
-/// Core WebSocket loop: wake agent, relay messages, stream responses.
+/// Core WebSocket loop: wake agent, relay messages via CLI, stream responses.
 async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, user_id: Uuid) {
     // --- Wake agent if needed ---
     if let Err(e) = send_json(
@@ -143,11 +146,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
         return;
     }
 
-    // Build base URL for the agent container's HTTP API.
-    let container_name = match &agent.container_name {
-        Some(name) => name.clone(),
+    let container_id = match &agent.container_id {
+        Some(id) => id.clone(),
         None => {
-            tracing::error!(agent_id = %agent_id, "Agent has no container name");
+            tracing::error!(agent_id = %agent_id, "Agent has no container ID");
             let _ = send_json(
                 &mut socket,
                 &OutgoingMessage {
@@ -160,9 +162,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
             return;
         }
     };
-
-    let http_client = reqwest::Client::new();
-    let agent_url = format!("http://{container_name}:3000/api/chat");
 
     // --- Message loop ---
     while let Some(msg_result) = socket.recv().await {
@@ -185,7 +184,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
                 tracing::info!(agent_id = %agent_id, user_id = %user_id, "Client sent close frame");
                 break;
             }
-            // Ignore binary, ping, pong.
             _ => continue,
         };
 
@@ -210,62 +208,38 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
             continue;
         }
 
-        // Forward message to agent container.
-        let agent_resp = http_client
-            .post(&agent_url)
-            .json(&serde_json::json!({ "message": incoming.content }))
-            .send()
-            .await;
+        // Send message to agent via `openclaw agent` CLI (docker exec).
+        // This handles the full OpenClaw gateway protocol internally.
+        let _ = send_json(
+            &mut socket,
+            &OutgoingMessage {
+                msg_type: "status".into(),
+                content: None,
+                message: Some("Thinking...".into()),
+            },
+        )
+        .await;
 
-        match agent_resp {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<AgentChatResponse>().await {
-                    Ok(body) => {
-                        let _ = send_json(
-                            &mut socket,
-                            &OutgoingMessage {
-                                msg_type: "done".into(),
-                                content: Some(body.response),
-                                message: None,
-                            },
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to parse agent response");
-                        let _ = send_json(
-                            &mut socket,
-                            &OutgoingMessage {
-                                msg_type: "error".into(),
-                                content: None,
-                                message: Some("Failed to parse agent response".into()),
-                            },
-                        )
-                        .await;
-                    }
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                tracing::error!(status = %status, "Agent returned error status");
+        match exec_agent_message(&state.docker, &container_id, &incoming.content).await {
+            Ok(response) => {
                 let _ = send_json(
                     &mut socket,
                     &OutgoingMessage {
-                        msg_type: "error".into(),
-                        content: None,
-                        message: Some(format!("Agent error (HTTP {status})")),
+                        msg_type: "done".into(),
+                        content: Some(response),
+                        message: None,
                     },
                 )
                 .await;
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to contact agent container");
+                tracing::error!(error = %e, "Agent message failed");
                 let _ = send_json(
                     &mut socket,
                     &OutgoingMessage {
                         msg_type: "error".into(),
                         content: None,
-                        message: Some("Failed to contact agent".into()),
+                        message: Some("Agent failed to respond".into()),
                     },
                 )
                 .await;
@@ -287,6 +261,89 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
         user_id = %user_id,
         "WebSocket chat session ended"
     );
+}
+
+/// Execute a message on the agent container via `openclaw agent --json` CLI.
+///
+/// Uses Docker exec to run the OpenClaw CLI inside the agent container, which
+/// handles the gateway WebSocket protocol, device authentication, and session
+/// management internally.
+async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) -> Result<String, String> {
+    let exec = docker
+        .create_exec(
+            container_id,
+            CreateExecOptions {
+                cmd: Some(vec![
+                    "openclaw",
+                    "agent",
+                    "--agent", "main",
+                    "--message", message,
+                    "--json",
+                    "--timeout", "120",
+                ]),
+                env: Some(vec!["HOME=/home/node"]),
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("Docker exec create failed: {e}"))?;
+
+    let output = docker
+        .start_exec(&exec.id, None)
+        .await
+        .map_err(|e| format!("Docker exec start failed: {e}"))?;
+
+    let mut stdout = String::new();
+    if let StartExecResults::Attached { mut output, .. } = output {
+        let stream_result = tokio::time::timeout(Duration::from_secs(130), async {
+            while let Some(chunk) = output.next().await {
+                match chunk {
+                    Ok(bollard::container::LogOutput::StdOut { message }) => {
+                        stdout.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    Ok(bollard::container::LogOutput::StdErr { message }) => {
+                        let stderr = String::from_utf8_lossy(&message);
+                        tracing::debug!(stderr = %stderr, "Agent stderr");
+                    }
+                    Err(e) => {
+                        return Err(format!("Docker exec stream error: {e}"));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        })
+        .await;
+
+        match stream_result {
+            Err(_elapsed) => return Err("Docker exec timed out".into()),
+            Ok(Err(e)) => return Err(e),
+            Ok(Ok(())) => {}
+        }
+    }
+
+    // Parse the JSON output from `openclaw agent --json`
+    // The response has a `payloads` array with text responses
+    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        if let Some(payloads) = data.get("payloads").and_then(|p| p.as_array()) {
+            let texts: Vec<&str> = payloads
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if !texts.is_empty() {
+                return Ok(texts.join("\n"));
+            }
+        }
+    }
+
+    // If we couldn't parse JSON, return a generic error to avoid leaking
+    // internal agent logs or error details to the client.
+    if !stdout.trim().is_empty() {
+        tracing::warn!("Agent returned non-JSON output (suppressed from client)");
+    }
+    Err("Agent returned an unexpected response".into())
 }
 
 /// Serialize and send a JSON message over the WebSocket.

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use bollard::Docker;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
 
@@ -22,6 +23,8 @@ pub struct AppState {
     pub db: PgPool,
     /// Redis connection pool (rate limiting, caching).
     pub redis: deadpool_redis::Pool,
+    /// Docker client for container exec operations (e.g. agent chat).
+    pub docker: Docker,
     /// Agent lifecycle orchestrator.
     pub orchestrator: Arc<Orchestrator>,
     /// LLM provider proxy with fallback chain.
