@@ -338,13 +338,12 @@ async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) 
         }
     }
 
-    // If we couldn't parse JSON, return raw output (may contain error info)
-    if stdout.trim().is_empty() {
-        Err("Agent returned empty response".into())
-    } else {
-        // Try to extract any useful text from the output
-        Ok(stdout.trim().to_string())
+    // If we couldn't parse JSON, return a generic error to avoid leaking
+    // internal agent logs or error details to the client.
+    if !stdout.trim().is_empty() {
+        tracing::warn!("Agent returned non-JSON output (suppressed from client)");
     }
+    Err("Agent returned an unexpected response".into())
 }
 
 /// Serialize and send a JSON message over the WebSocket.
