@@ -1,8 +1,9 @@
-//! Notification listing endpoint.
+//! Notification endpoints (listing + mark-as-read).
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
@@ -23,7 +24,9 @@ pub struct PaginationParams {
 
 /// Mount notification routes under a common prefix.
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/", get(list_notifications))
+    Router::new()
+        .route("/", get(list_notifications))
+        .route("/{id}/read", post(mark_read))
 }
 
 /// `GET /api/notifications` — Paginated notification listing.
@@ -54,4 +57,21 @@ async fn list_notifications(
     .await?;
 
     Ok(Json(notifications))
+}
+
+/// `POST /api/notifications/{id}/read` — Mark a notification as read.
+async fn mark_read(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<i64>,
+) -> AppResult<impl IntoResponse> {
+    tracing::info!(
+        user_id = %auth.0.sub,
+        notification_id = id,
+        "Marking notification as read"
+    );
+
+    state.notification_service.mark_read(id, auth.0.sub).await?;
+
+    Ok(StatusCode::OK)
 }
