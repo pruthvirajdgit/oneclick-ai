@@ -78,4 +78,4 @@ jobs:
                   JWT_SECRET: test-jwt-secret-for-ci-only
                   INTERNAL_SECRET: test-internal-secret-for-ci-only
                   GROQ_API_KEY: gsk_test_placeholder
-              run: cargo test --workspace --features integration
+              run: cargo test --workspace --features integration -- --test-threads=1
