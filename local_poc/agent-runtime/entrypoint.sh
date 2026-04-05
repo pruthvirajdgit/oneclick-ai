@@ -65,6 +65,9 @@ cat > "${CONFIG_FILE}" << CFGEOF
       "ollama": {
         "baseUrl": "${OLLAMA_HOST:-http://host.docker.internal:11434}/v1",
         "models": []
+      },
+      "openrouter": {
+        "baseUrl": "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
       }
     }
   },
