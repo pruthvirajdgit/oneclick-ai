@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM rust:1.94 AS builder
+FROM rust:1.94-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release
