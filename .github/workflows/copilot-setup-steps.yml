@@ -3,11 +3,15 @@ name: "Copilot Setup Steps"
 on:
     workflow_dispatch:
     push:
+        branches:
+            - main
         paths:
-            - .github/workflows/copilot-setup-steps.yml
+            - 'backend/**'
+            - '.github/workflows/copilot-setup-steps.yml'
     pull_request:
         paths:
-            - .github/workflows/copilot-setup-steps.yml
+            - 'backend/**'
+            - '.github/workflows/copilot-setup-steps.yml'
 
 jobs:
     copilot-setup-steps:
@@ -61,6 +65,14 @@ jobs:
                   key: ${{ runner.os }}-cargo-${{ hashFiles('backend/Cargo.lock') }}
                   restore-keys: |
                       ${{ runner.os }}-cargo-
+
+            - name: Check code formatting
+              working-directory: backend
+              run: cargo fmt --all -- --check
+
+            - name: Run clippy
+              working-directory: backend
+              run: cargo clippy --workspace --all-targets -- -D warnings
 
             - name: Build the workspace
               working-directory: backend
