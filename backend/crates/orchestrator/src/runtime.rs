@@ -134,9 +134,16 @@ impl AgentRuntime for DockerRuntime {
             // Constrain Node.js heap to avoid OOM during GC spikes
             "NODE_OPTIONS=--max-old-space-size=1280".to_string(),
             // OpenClaw requires an API key to initialize its gateway.
-            // The actual LLM calls go through the backend proxy, but the
-            // gateway won't bind its port without a valid key present.
-            format!("OPENROUTER_API_KEY={}", config.openrouter_api_key),
+            // OpenClaw requires a non-empty API key to start its gateway,
+            // even though actual LLM calls route through our backend proxy.
+            format!(
+                "OPENROUTER_API_KEY={}",
+                if config.openrouter_api_key.is_empty() {
+                    "oneclick-proxy-routed".to_string()
+                } else {
+                    config.openrouter_api_key.clone()
+                }
+            ),
         ];
 
         let mut labels = HashMap::new();
