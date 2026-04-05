@@ -1,0 +1,27 @@
+[package]
+name = "oneclick-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oneclick-shared = { path = "../shared" }
+oneclick-orchestrator = { path = "../orchestrator" }
+oneclick-llm-proxy = { path = "../llm-proxy" }
+oneclick-notifications = { path = "../notifications" }
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+utoipa.workspace = true
+tower-http.workspace = true
+uuid.workspace = true
+sqlx.workspace = true
+chrono.workspace = true
+deadpool-redis.workspace = true
+redis.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+cron.workspace = true
+reqwest.workspace = true

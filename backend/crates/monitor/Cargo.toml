@@ -1,0 +1,16 @@
+[package]
+name = "oneclick-monitor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oneclick-shared = { path = "../shared" }
+oneclick-orchestrator = { path = "../orchestrator" }
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true

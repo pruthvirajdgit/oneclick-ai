@@ -1,0 +1,14 @@
+[package]
+name = "oneclick-scheduler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oneclick-shared = { path = "../shared" }
+oneclick-orchestrator = { path = "../orchestrator" }
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+reqwest.workspace = true
