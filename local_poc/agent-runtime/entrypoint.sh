@@ -67,7 +67,8 @@ cat > "${CONFIG_FILE}" << CFGEOF
         "models": []
       },
       "openrouter": {
-        "baseUrl": "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
+        "baseUrl": "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}",
+        "models": []
       }
     }
   },

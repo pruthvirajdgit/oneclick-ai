@@ -168,10 +168,10 @@ pub(crate) async fn send_openai_request(
         });
     }
 
-    let completion: ChatCompletionResponse = response
-        .json()
-        .await
-        .map_err(|e| ProviderError::InvalidResponse(e.to_string()))?;
+    let body = response.text().await.unwrap_or_default();
+    tracing::debug!(body_len = body.len(), body_preview = %&body[..body.len().min(500)], "Raw provider response");
+    let completion: ChatCompletionResponse = serde_json::from_str(&body)
+        .map_err(|e| ProviderError::InvalidResponse(format!("{e}: {}", &body[..body.len().min(300)])))?;
 
     Ok(completion)
 }

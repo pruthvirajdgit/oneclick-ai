@@ -16,7 +16,64 @@ use oneclick_shared::config::Config;
 use oneclick_shared::errors::{AppError, AppResult};
 
 use crate::provider::{send_openai_request, ProviderError};
-use crate::types::{ChatCompletionRequest, ChatCompletionResponse};
+use crate::types::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage};
+
+// ---------------------------------------------------------------------------
+// Message truncation
+// ---------------------------------------------------------------------------
+
+/// Truncate messages to keep total content under `max_chars`.
+///
+/// Strategy: keep the system message (first) and latest user message (last),
+/// trim middle messages, and truncate individual message content if needed.
+fn truncate_messages(messages: &mut Vec<ChatMessage>, max_chars: usize) {
+    // Calculate total character count across all messages
+    let total: usize = messages.iter().map(|m| content_len(&m.content)).sum();
+    if total <= max_chars {
+        return;
+    }
+
+    // Drop middle messages first (keep first + last 2)
+    while messages.len() > 3 && char_total(messages) > max_chars {
+        messages.remove(1);
+    }
+
+    // If still over, truncate the longest message content
+    if char_total(messages) > max_chars {
+        for msg in messages.iter_mut() {
+            truncate_content(&mut msg.content, 2000);
+        }
+    }
+}
+
+fn content_len(val: &serde_json::Value) -> usize {
+    match val {
+        serde_json::Value::String(s) => s.len(),
+        serde_json::Value::Array(arr) => arr.iter().map(|v| content_len(v)).sum(),
+        _ => val.to_string().len(),
+    }
+}
+
+fn char_total(messages: &[ChatMessage]) -> usize {
+    messages.iter().map(|m| content_len(&m.content)).sum()
+}
+
+fn truncate_content(val: &mut serde_json::Value, max: usize) {
+    match val {
+        serde_json::Value::String(s) => {
+            if s.len() > max {
+                s.truncate(max);
+                s.push_str("...[truncated]");
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                truncate_content(item, max);
+            }
+        }
+        _ => {}
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ProviderConfig
@@ -116,6 +173,12 @@ impl LlmProxy {
             for model in &provider.models {
                 let mut req = request.clone();
                 req.model = model.clone();
+                // Strip ALL extra fields to avoid inflating the request body.
+                req.extra = serde_json::Value::Object(serde_json::Map::new());
+                // Force non-streaming — the proxy expects a single JSON response.
+                req.stream = Some(false);
+                // Truncate messages to stay within provider token limits.
+                truncate_messages(&mut req.messages, 8000);
 
                 match self.try_provider(provider, &req).await {
                     Ok(response) => {

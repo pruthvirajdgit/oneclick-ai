@@ -133,10 +133,12 @@ impl AgentRuntime for DockerRuntime {
             "OPENCLAW_GATEWAY_TOKEN=oneclick-internal".to_string(),
             // Constrain Node.js heap to avoid OOM during GC spikes
             "NODE_OPTIONS=--max-old-space-size=1280".to_string(),
-            // OpenClaw requires a non-empty API key to start its gateway,
-            // even though actual LLM calls route through our backend proxy.
-            // Always use a placeholder so containers never receive real keys.
-            "OPENROUTER_API_KEY=oneclick-proxy-routed".to_string(),
+            // Encode internal auth in the API key so OpenClaw sends it as
+            // Authorization: Bearer header. Format: secret|agent_id|user_id
+            format!(
+                "OPENROUTER_API_KEY={}|{}|{}",
+                config.internal_secret, agent.id, agent.user_id
+            ),
         ];
 
         let mut labels = HashMap::new();
