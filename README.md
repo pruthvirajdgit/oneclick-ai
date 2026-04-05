@@ -2,95 +2,93 @@
 
 **Your AI Workforce. One Click.**
 
-Deploy a 24/7 AI agent in under 60 seconds. No coding required.
+A multi-tenant SaaS platform where every user gets a personal AI agent that runs 24/7, executes tasks on schedule, and costs nothing to idle.
 
 ---
 
-## Quick Start (3 steps)
+## Architecture
 
-```bash
-# 1. Clone the repo
-git clone https://github.com/YOUR_USER/oneclick-ai.git
-cd oneclick-ai
+Single Rust binary (axum/tokio/sqlx/bollard) managing per-user OpenClaw agent containers with scale-to-zero.
 
-# 2. Add your free OpenRouter API key
-cp agent-runtime/.env.example agent-runtime/.env
-# Edit agent-runtime/.env → paste your key from https://openrouter.ai/keys
+```
+Internet → Traefik → Rust Backend (port 8080)
+                         ├── API (auth, agents, schedules, usage, notifications)
+                         ├── Orchestrator (Docker container lifecycle)
+                         ├── LLM Proxy (Groq → OpenRouter fallback)
+                         ├── Scheduler (cron jobs)
+                         ├── Monitor (idle agent detection)
+                         └── Notifications (real-time broadcast)
+                              │
+                              ↓ Docker socket
+                    ┌─────────┼─────────┐
+                    agent-abc  agent-def  agent-xyz  (OpenClaw containers)
 
-# 3. Run it
-./start.sh
+PostgreSQL 16 ← persistent data
+Redis 7       ← rate limits
 ```
 
-That's it. The script installs Docker (if needed), builds the image, starts the
-agent, and gives you a dashboard URL.
-
-> **Don't have an OpenRouter key?** Go to [openrouter.ai/keys](https://openrouter.ai/keys),
-> sign up (free, no credit card), click "+ Create Key", and copy it.
-
----
-
-## What You Get
-
-| Feature | Details |
-|---------|---------|
-| 🤖 AI Agent | Always-on, powered by OpenRouter (free LLMs available) |
-| 🌐 Web Dashboard | Chat with your agent at `http://localhost:3000` |
-| 💬 Messaging | Connect Telegram, Slack, or Discord bots |
-| 🧠 Memory | Agent remembers past conversations |
-| 🔧 Tools | Web browsing, file reading, and more via OpenClaw |
-
----
-
-## Agent Management
+## Quick Start
 
 ```bash
-./scripts/agent.sh status      # Check agent health
-./scripts/agent.sh logs        # View live logs
-./scripts/agent.sh dashboard   # Get the dashboard URL
-./scripts/agent.sh approve     # Approve browser pairing
-./scripts/agent.sh stop        # Stop the agent
-./scripts/agent.sh start       # Start the agent
-./scripts/agent.sh restart     # Restart the agent
-./scripts/agent.sh rebuild     # Rebuild from scratch
-./scripts/agent.sh prompt      # Change the system prompt
-./scripts/agent.sh model       # Switch LLM model
+cp .env.example .env      # fill in API keys (GROQ_API_KEY or OPENROUTER_API_KEY)
+docker compose up -d --build
+# API at http://localhost:8080
+# Swagger UI at http://localhost:8080/swagger-ui/
 ```
-
-## Multi-Agent (Scaling Test)
-
-```bash
-./scripts/agent.sh multi-start    # Start 3 agents + Traefik
-./scripts/agent.sh multi-stop     # Stop everything
-```
-
----
 
 ## Project Structure
 
 ```
 oneclick-ai/
-├── start.sh                    # ⭐ ONE-CLICK ENTRY POINT
-├── agent-runtime/
-│   ├── Dockerfile              # Custom OpenClaw image
-│   ├── docker-compose.yml      # Single agent config
-│   ├── docker-compose.multi.yml # Multi-agent + Traefik
-│   ├── entrypoint.sh           # Env vars → OpenClaw config
-│   ├── .env.example            # Configuration template
-│   └── docs/                   # Your docs (mounted into agent)
-├── scripts/
-│   ├── setup.sh                # Setup internals (called by start.sh)
-│   └── agent.sh                # Agent lifecycle commands
-├── context_bank.md             # Architecture & design decisions
-└── README.md                   # This file
+├── backend/                    # Rust workspace (10 crates)
+│   ├── crates/
+│   │   ├── api/                # HTTP routes, middleware, WebSocket
+│   │   ├── orchestrator/       # Agent container lifecycle
+│   │   ├── llm-proxy/          # Multi-provider LLM routing
+│   │   ├── scheduler/          # Background cron runner
+│   │   ├── monitor/            # Idle agent detection
+│   │   ├── notifications/      # Real-time notification broadcast
+│   │   ├── message-queue/      # PostgreSQL-backed message buffer
+│   │   ├── agent-tools/        # OpenClaw JS plugin (4 tools)
+│   │   ├── shared/             # Config, DB, Redis, auth, models
+│   │   └── webhook-receiver/   # Phase 1 stub
+│   ├── migrations/             # 6 sqlx migration files
+│   └── tests/                  # Integration tests
+├── agent-runtime/              # OpenClaw Docker image + entrypoint
+├── .context_bank/              # AI-readable project knowledge base
+├── docker-compose.yml          # Base stack (Traefik + Backend + PG + Redis)
+├── docker-compose.override.yml # Dev overrides (dashboard, debug ports)
+├── docker-compose.prod.yml     # Prod overlay (TLS, read-only socket)
+├── local_poc/                  # Archived POC code (pre-Phase 1)
+└── .env.example                # Environment variable template
 ```
 
-## Current Phase: P0 — Core Engine ✅
+## Key Endpoints
 
-- [x] OpenClaw Docker image with env-var configuration
-- [x] One-click setup script (Docker install → build → start → dashboard)
-- [x] Single agent docker-compose (2GB, health check, auto-restart)
-- [x] Multi-agent docker-compose with Traefik routing
-- [x] Agent management CLI (start/stop/status/logs/dashboard/approve)
-- [x] OpenRouter integration (free LLM tier)
-- [x] Messaging channel support (Telegram, Slack, Discord)
-- [x] **Tested and working locally**
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | /api/auth/signup | — | Create account |
+| POST | /api/auth/login | — | Get JWT |
+| POST | /api/agents | JWT | Create agent |
+| WS | /api/agents/{id}/chat | JWT | Real-time chat |
+| GET | /api/usage | JWT | Usage stats |
+| GET | /health | — | Liveness probe |
+| GET | /swagger-ui/ | — | Interactive API docs |
+
+## Development
+
+```bash
+cd backend
+cargo test --workspace          # Unit tests (no external deps needed)
+cargo test --workspace --features integration  # Integration tests (needs Postgres)
+```
+
+## Roadmap
+
+- **Phase 1** ✅ Docker containers, scale-to-zero via stop/start (5-10s cold start)
+- **Phase 2** — CRIU checkpoint/restore (1-2s cold start)
+- **Phase 3** — Firecracker microVMs (<200ms restore, S3 snapshots)
+
+---
+
+See [`.context_bank/`](.context_bank/README.md) for detailed architecture, design decisions, and module documentation.
