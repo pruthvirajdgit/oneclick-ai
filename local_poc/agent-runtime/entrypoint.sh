@@ -44,7 +44,10 @@ cat > "${CONFIG_FILE}" << CFGEOF
     "mode": "local",
     "port": ${GATEWAY_PORT},
     "bind": "lan",
-    "auth": { "mode": "token" }
+    "auth": { "mode": "token" },
+    "controlUi": {
+      "allowedOrigins": ["*"]
+    }
   },
   "agents": {
     "defaults": {

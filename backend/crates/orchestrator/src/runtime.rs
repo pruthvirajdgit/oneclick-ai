@@ -124,8 +124,19 @@ impl AgentRuntime for DockerRuntime {
         );
 
         let env = vec![
+            // Route LLM traffic through backend proxy (not directly to providers)
             "OPENROUTER_BASE_URL=http://backend:8080/internal/llm/v1".to_string(),
             format!("DEFAULT_MODEL={}", agent.model),
+            format!("AGENT_MODEL={}", agent.model),
+            format!("AGENT_NAME=agent-{}", &agent.id.to_string()[..8]),
+            "AGENT_PORT=3000".to_string(),
+            "OPENCLAW_GATEWAY_TOKEN=oneclick-internal".to_string(),
+            // Constrain Node.js heap to avoid OOM during GC spikes
+            "NODE_OPTIONS=--max-old-space-size=1280".to_string(),
+            // OpenClaw requires an API key to initialize its gateway.
+            // The actual LLM calls go through the backend proxy, but the
+            // gateway won't bind its port without a valid key present.
+            format!("OPENROUTER_API_KEY={}", config.openrouter_api_key),
         ];
 
         let mut labels = HashMap::new();
@@ -147,6 +158,10 @@ impl AgentRuntime for DockerRuntime {
                 name: Some(RestartPolicyNameEnum::NO),
                 maximum_retry_count: None,
             }),
+            // Bind a named volume for OpenClaw state persistence across stop/start
+            binds: Some(vec![
+                format!("oneclick-agent-{name}:/home/node/.openclaw"),
+            ]),
             ..Default::default()
         };
 
@@ -158,6 +173,8 @@ impl AgentRuntime for DockerRuntime {
             networking_config: Some(NetworkingConfig {
                 endpoints_config: endpoints,
             }),
+            // OpenClaw requires a TTY to run the gateway process
+            tty: Some(true),
             ..Default::default()
         };
 
@@ -268,7 +285,9 @@ impl AgentRuntime for DockerRuntime {
             if let Some(status) = &health.status {
                 let status_str: &str = status.as_ref();
                 let healthy = status_str == "healthy";
-                info!(container_id, status = status_str, "Docker health status");
+                if status_str != "starting" {
+                    info!(container_id, status = status_str, "Docker health status");
+                }
                 return Ok(healthy);
             }
         }

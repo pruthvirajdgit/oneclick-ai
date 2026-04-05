@@ -59,7 +59,7 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 
 ## Agent Containers
 - Image: `oneclick-agent:latest` (custom OpenClaw build from `agent-runtime/Dockerfile`)
-- Memory: 512MB (configurable via `AGENT_MEMORY_LIMIT`). OpenClaw needs ~2GB in practice (`NODE_OPTIONS=--max-old-space-size=1280`)
+- Memory: 4GB default (configurable via `AGENT_MEMORY_LIMIT`). OpenClaw startup peak exceeds 2GB; steady state ~500MB. `NODE_OPTIONS=--max-old-space-size=1280` constrains heap.
 - CPU: 0.5 cores (configurable via `AGENT_CPU_LIMIT`)
 - Network: `oneclick-net`
 - Labels: `oneclick.agent_id`, `oneclick.user_id`
@@ -99,7 +99,7 @@ ACME_EMAIL            admin@yourdomain.com
 REDIS_URL             redis://redis:6379
 CORS_ALLOWED_ORIGINS  http://localhost:3000 (comma-separated)
 AGENT_IMAGE           oneclick-agent:latest
-AGENT_MEMORY_LIMIT    512m
+AGENT_MEMORY_LIMIT    4g
 AGENT_CPU_LIMIT       0.5
 MAX_AGENTS            100
 FREE_TIER_DAILY_LIMIT 50
