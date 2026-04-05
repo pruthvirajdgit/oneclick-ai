@@ -32,7 +32,7 @@ fn openapi_spec() -> serde_json::Value {
             "version": "0.1.0",
             "description": "Multi-tenant AI agent platform — manage agents, schedules, and usage."
         },
-        "servers": [{"url": "http://localhost:8080"}],
+        "servers": [{"url": "/"}],
         "components": {
             "securitySchemes": {
                 "bearerAuth": {
@@ -259,6 +259,21 @@ fn openapi_spec() -> serde_json::Value {
                     "responses": {
                         "200": {"description": "Marked as read"},
                         "404": {"description": "Not found"}
+                    }
+                }
+            },
+            "/api/agents/{id}/chat": {
+                "get": {
+                    "tags": ["agents"],
+                    "summary": "WebSocket chat with an agent",
+                    "operationId": "agentChat",
+                    "security": [{"bearerAuth": []}],
+                    "parameters": [
+                        {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+                        {"name": "token", "in": "query", "required": true, "schema": {"type": "string"}, "description": "JWT token (WebSocket cannot send headers)"}
+                    ],
+                    "responses": {
+                        "101": {"description": "Switching Protocols — WebSocket connection established"}
                     }
                 }
             },

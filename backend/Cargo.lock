@@ -1623,6 +1623,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "bollard",
  "deadpool-redis",
  "metrics-exporter-prometheus",
  "oneclick-agent-tools",

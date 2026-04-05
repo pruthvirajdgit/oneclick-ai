@@ -12,6 +12,7 @@ use oneclick_api::state::AppState;
 use oneclick_llm_proxy::LlmProxy;
 use oneclick_monitor::IdleMonitor;
 use oneclick_notifications::NotificationService;
+use bollard::Docker;
 use oneclick_orchestrator::{DockerRuntime, Orchestrator};
 use oneclick_scheduler::Scheduler;
 
@@ -45,6 +46,10 @@ async fn main() -> anyhow::Result<()> {
         .install_recorder()
         .expect("Failed to install Prometheus recorder");
 
+    // ── Docker client (shared for exec operations) ────────────────────
+    let docker = Docker::connect_with_local_defaults()?;
+    tracing::info!("Docker client connected");
+
     // ── Orchestrator ────────────────────────────────────────────────────
     let runtime = DockerRuntime::new()?;
     let orchestrator = Arc::new(Orchestrator::new(Arc::new(runtime), db_pool.clone()));
@@ -61,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         db: db_pool.clone(),
         redis: redis_pool,
+        docker,
         orchestrator: orchestrator.clone(),
         llm_proxy,
         notification_service,

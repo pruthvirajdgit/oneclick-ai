@@ -7,9 +7,14 @@
 //! Instead of implementing that protocol, we use the `openclaw agent` CLI
 //! command via Docker exec, which handles authentication internally.
 
+use std::time::Duration;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
+use bollard::exec::{CreateExecOptions, StartExecResults};
+use bollard::Docker;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -215,7 +220,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
         )
         .await;
 
-        match exec_agent_message(&container_id, &incoming.content).await {
+        match exec_agent_message(&state.docker, &container_id, &incoming.content).await {
             Ok(response) => {
                 let _ = send_json(
                     &mut socket,
@@ -263,14 +268,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
 /// Uses Docker exec to run the OpenClaw CLI inside the agent container, which
 /// handles the gateway WebSocket protocol, device authentication, and session
 /// management internally.
-async fn exec_agent_message(container_id: &str, message: &str) -> Result<String, String> {
-    use bollard::Docker;
-    use bollard::exec::{CreateExecOptions, StartExecResults};
-    use futures_util::StreamExt;
-
-    let docker = Docker::connect_with_local_defaults()
-        .map_err(|e| format!("Docker connection failed: {e}"))?;
-
+async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) -> Result<String, String> {
     let exec = docker
         .create_exec(
             container_id,
@@ -299,20 +297,30 @@ async fn exec_agent_message(container_id: &str, message: &str) -> Result<String,
 
     let mut stdout = String::new();
     if let StartExecResults::Attached { mut output, .. } = output {
-        while let Some(chunk) = output.next().await {
-            match chunk {
-                Ok(bollard::container::LogOutput::StdOut { message }) => {
-                    stdout.push_str(&String::from_utf8_lossy(&message));
+        let stream_result = tokio::time::timeout(Duration::from_secs(130), async {
+            while let Some(chunk) = output.next().await {
+                match chunk {
+                    Ok(bollard::container::LogOutput::StdOut { message }) => {
+                        stdout.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    Ok(bollard::container::LogOutput::StdErr { message }) => {
+                        let stderr = String::from_utf8_lossy(&message);
+                        tracing::debug!(stderr = %stderr, "Agent stderr");
+                    }
+                    Err(e) => {
+                        return Err(format!("Docker exec stream error: {e}"));
+                    }
+                    _ => {}
                 }
-                Ok(bollard::container::LogOutput::StdErr { message }) => {
-                    let stderr = String::from_utf8_lossy(&message);
-                    tracing::debug!(stderr = %stderr, "Agent stderr");
-                }
-                Err(e) => {
-                    return Err(format!("Docker exec stream error: {e}"));
-                }
-                _ => {}
             }
+            Ok(())
+        })
+        .await;
+
+        match stream_result {
+            Err(_elapsed) => return Err("Docker exec timed out".into()),
+            Ok(Err(e)) => return Err(e),
+            Ok(Ok(())) => {}
         }
     }
 
