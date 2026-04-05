@@ -15,8 +15,8 @@
 | Method | What it does |
 |--------|-------------|
 | `create(user_id, title, body)` | INSERT → broadcast to subscribers |
-| `list(user_id, limit, offset)` | SELECT paginated, newest first |
-| `mark_read(notification_id, user_id)` | UPDATE read=TRUE (scoped to user) |
+| `list(user_id, limit, offset)` | SELECT paginated, newest first (i64 saturating math for offset) |
+| `mark_read(notification_id, user_id)` | UPDATE read=TRUE (scoped to user); returns `NotFound` if 0 rows affected |
 | `count_unread(user_id)` | COUNT WHERE read=FALSE |
 | `subscribe(user_id)` | Return broadcast::Receiver (creates channel on demand) |
 | `cleanup_channel(user_id)` | Remove channel if no subscribers |

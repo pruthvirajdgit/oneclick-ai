@@ -38,7 +38,10 @@ Maps to HTTP status codes via `IntoResponse`:
 - `Redis(PoolError)` → 500
 
 ### Config
-All fields have defaults except `DATABASE_URL` and `JWT_SECRET` (required).
+Required env vars (startup fails if missing): `DATABASE_URL`, `JWT_SECRET`, `INTERNAL_SECRET`.
+Optional with defaults: all others (see `Config::from_env()`).
+- `cors_allowed_origins: Vec<String>` — from `CORS_ALLOWED_ORIGINS` (comma-separated), defaults to `*`
+- Validates on startup that at least one LLM provider key (`GROQ_API_KEY` or `OPENROUTER_API_KEY`) is set.
 
 ## Tests
 - `auth::tests` — password hash/verify, JWT create/validate, invalid secret rejection (3 tests)

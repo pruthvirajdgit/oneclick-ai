@@ -46,15 +46,16 @@ pub struct Orchestrator {
 ### Methods
 | Method | What it does |
 |--------|-------------|
-| `create_agent(user_id, model, config)` | Check capacity → insert DB → create container → update DB |
+| `create_agent(user_id, model, config)` | Atomic capacity check (`INSERT...SELECT WHERE count < max`) → create container → update DB |
 | `wake_agent(agent_id)` | Lock → start container → health check (5 retries, 2s) → update status |
 | `sleep_agent(agent_id)` | Lock → stop container → update status |
-| `destroy_agent(agent_id)` | Lock → remove container → delete DB record → remove lock |
+| `destroy_agent(agent_id)` | Lock → remove container → delete DB record (lock entry intentionally retained) |
+| `purge_stale_locks()` | Periodic cleanup: removes DashMap entries for agents no longer in DB |
 | `ensure_ready(agent_id)` | Running→return, Stopped→wake, Creating→error, Error→error |
 | `get_agent_status(agent_id)` | Query DB |
 
 ### Locking
-Every mutation acquires `locks.entry(agent_id).or_insert(Mutex)`. Prevents concurrent wake+sleep race conditions.
+Every mutation acquires `locks.entry(agent_id).or_insert(Mutex)`. Prevents concurrent wake+sleep race conditions. Lock entries are intentionally kept after `destroy_agent` (removing while other tasks hold Arc clones would break serialization). Call `purge_stale_locks()` periodically to bound DashMap growth.
 
 ## Tests
 - `parse_memory_limit` — m/M/g/G/k/K/bytes/invalid (6 tests)

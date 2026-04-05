@@ -85,4 +85,6 @@ main.rs (binary) depends on all crates, wires them together.
 2. **Per-agent locking via DashMap.** No two concurrent operations (wake, sleep, destroy) can race on the same agent.
 3. **PostgreSQL is the source of truth for agent status.** Redis caches are secondary.
 4. **Agents are stateless from the backend's perspective.** All persistent state lives in PostgreSQL. Agent containers can be destroyed and recreated without data loss (except in-memory conversation cache).
-5. **Internal endpoints use header-based auth** (`X-Agent-Id`, `X-User-Id`), not JWT. Agent containers are trusted within the Docker network.
+5. **Internal endpoints use header-based auth** (`X-Agent-Id`, `X-User-Id`, `X-Internal-Secret`), validated via shared secret + DB ownership check (`SELECT EXISTS`). Agent containers are trusted within the Docker network but must prove ownership.
+6. **Database FKs use ON DELETE CASCADE on usage tables** to ensure cleanup on agent/user deletion.
+7. **All time comparisons use UTC.** Day boundaries: `date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`.

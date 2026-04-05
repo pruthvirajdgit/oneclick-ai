@@ -27,6 +27,7 @@ POST http://{container_name}:3000/api/chat
 Content-Type: application/json
 { "message": job.task_message }
 ```
+HTTP client has a 30-second timeout to prevent scheduler stall on hung agents.
 
 ## Error Handling
 - Agent wake failure: log error, skip job, try again next tick

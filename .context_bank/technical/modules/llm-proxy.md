@@ -34,8 +34,9 @@ pub struct LlmProxy {
 | Method | What it does |
 |--------|-------------|
 | `chat_completion(user_id, agent_id, request)` | Try each (provider, model) pair; log usage on success |
-| `check_rate_limit(user_id, tier, daily_limit)` | Count today's usage rows; pro users bypass |
-| `log_usage(user_id, agent_id, model, provider, tokens_in, tokens_out)` | INSERT into usage table |
+| `check_rate_limit(user_id, tier, daily_limit)` | Read-only pre-check: counts today's usage rows via Redis GET; pro users bypass. Called BEFORE request |
+| `increment_rate_limit(user_id)` | Redis INCR counter; called AFTER successful LLM call only (prevents double-counting failures) |
+| `log_usage(user_id, agent_id, model, provider, tokens_in, tokens_out)` | INSERT into usage table (always logs, even on zero tokens) |
 
 ### Fallback Logic
 For each provider, for each model: try request. On 429 → warn + next. On error → error + next. On success → log usage + return. All failed → `AppError::Internal`.

@@ -69,6 +69,8 @@ notifications ← api (alerts)
 - Queries use `$1, $2` parameter binding — never string interpolation.
 - All queries are in the crate that owns the domain (e.g., agent queries in orchestrator, usage queries in llm-proxy).
 - Migrations in `backend/migrations/` using sqlx naming: `YYYYMMDDHHMMSS_description.sql`.
+- Foreign keys on usage tables use `ON DELETE CASCADE` for referential integrity.
+- All time comparisons use UTC. Day boundaries: `date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`.
 
 ### State Management
 - `AppState` (in api crate) is the single shared state struct passed to all handlers.

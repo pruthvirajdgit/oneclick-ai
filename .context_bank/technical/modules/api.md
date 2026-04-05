@@ -41,13 +41,13 @@ pub struct AppState {
 | POST | /internal/notifications | X-Agent-Id/X-User-Id | Agent sends notification |
 | GET | /health | None | Liveness probe ("ok") |
 | GET | /metrics | None | Prometheus metrics |
-| GET | /swagger-ui/ | None | Swagger UI (HTML+CDN) |
+| GET | /swagger-ui/ | None | Swagger UI (HTML+CDN v5.18.2, pinned) |
 | GET | /api-docs/openapi.json | None | OpenAPI spec |
 
 ## Middleware
-- **AuthUser**: Extracts JWT from `Authorization: Bearer` header. Makes `Claims` available.
-- **InternalAuth**: Extracts `X-Agent-Id` and `X-User-Id` headers for agent→backend calls.
-- **Rate Limit**: Redis INCR on `ratelimit:{user_id}:{date}`. Returns `(count, limit)`.
+- **AuthUser**: Extracts JWT from `Authorization: Bearer` header (case-insensitive per RFC 7235). Makes `Claims` available.
+- **InternalAuth**: Extracts `X-Agent-Id` and `X-User-Id` headers; validates `X-Internal-Secret`; confirms user owns agent via `SELECT EXISTS` DB query.
+- **Rate Limit**: Split into two operations — `check_rate_limit` (read-only Redis GET pre-check before request) and `increment_rate_limit` (Redis INCR after successful LLM call only). Prevents counting failed requests toward limit.
 
 ## WebSocket Chat Flow
 1. JWT validated from `?token=` query param (not header — WebSocket limitation)
@@ -55,6 +55,7 @@ pub struct AppState {
 3. If agent stopped → wake via orchestrator, send status messages to client
 4. Message loop: client sends JSON → forward to agent HTTP API → send response to client
 5. Update `agents.last_active` after each exchange
+6. Error responses return generic messages — internal details are never leaked to the client
 
 ## Extension
 - New endpoint: add handler in appropriate `routes/*.rs`, register in `routes()` or `create_router()`

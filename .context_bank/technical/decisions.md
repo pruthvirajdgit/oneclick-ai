@@ -61,3 +61,8 @@ Condensed ADRs. Each records what was decided, the strongest reason, and what wa
 ## TD-012: Feature-Gated Integration Tests
 **Decided:** Unit tests run with `cargo test`. Integration tests (require Postgres) gated behind `--features integration`.
 **Why:** `cargo test` must always pass without external services. CI runs both; local dev runs unit tests only.
+
+## TD-013: Rate Limit Split (Pre-Check / Post-Increment)
+**Decided:** `check_rate_limit` is a read-only Redis GET before the request; `increment_rate_limit` is a Redis INCR after success only.
+**Why:** Prevents counting failed or errored LLM requests toward the user's daily limit. Failed requests should not penalize users.
+**Rejected:** Single atomic INCR before request (penalizes users on provider failures).
