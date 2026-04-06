@@ -10,10 +10,18 @@ FROM ghcr.io/openclaw/openclaw:latest
 
 USER root
 
-# Create directories for docs and workspace
+# Create directories for docs, workspace, and plugins
 RUN mkdir -p /data/docs /home/node/workspace /tmp/jiti \
+    /home/node/.openclaw/plugins \
     && chown -R node:node /data/docs /home/node/workspace /tmp/jiti \
+    /home/node/.openclaw \
     && chmod 1777 /tmp /tmp/jiti
+
+# Copy the OneClick agent tools plugin into the plugins directory
+COPY --chmod=0644 oneclick-tools.js /home/node/.openclaw/plugins/oneclick-tools.js
+# Keep a pristine copy outside the volume mount path for fallback
+COPY --chmod=0644 oneclick-tools.js /opt/oneclick-tools.js
+RUN chown node:node /home/node/.openclaw/plugins/oneclick-tools.js
 
 # Copy entrypoint with correct permissions
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/oneclick-entrypoint.sh
