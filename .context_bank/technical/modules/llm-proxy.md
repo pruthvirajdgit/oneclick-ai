@@ -47,7 +47,7 @@ For each provider, for each model: try request. On 429 → warn + next. On error
 - Raw response body logged at `trace` level only (PII protection)
 
 ## Types (OpenAI-Compatible)
-- `ChatCompletionRequest` — model, messages, temperature, max_tokens, stream. `#[serde(flatten)]` removed from extra fields to prevent payload duplication.
+- `ChatCompletionRequest` — model, messages, temperature, max_tokens, stream. Extra fields (`extra`) are set to `None` before sending to providers to prevent payload pollution.
 - `ChatCompletionResponse` — id, object, created, model, choices, usage
 - `ChatMessage` — role, content (`serde_json::Value` — handles both string and array format for multimodal content from OpenClaw)
 - `Choice` — index, message, finish_reason
@@ -57,7 +57,7 @@ For each provider, for each model: try request. On 429 → warn + next. On error
 Both `GroqProvider` and `OpenRouterProvider` use the shared `send_openai_request` helper. Only base_url and api_key differ.
 
 ## SSE Conversion Layer
-When OpenClaw expects streaming (SSE format), the internal LLM endpoint converts the non-streaming JSON response into SSE events (`data: ...` chunks + `data: [DONE]`). This allows the proxy to always use `stream: false` upstream while satisfying clients that require SSE.
+When OpenClaw expects streaming (SSE format), the internal LLM endpoint in `internal.rs` converts the non-streaming JSON response into SSE events (`data: ...` chunks + `data: [DONE]`). This allows the proxy to always use `stream: false` upstream while satisfying clients that require SSE.
 
 ## Extension
 - New provider: add `ProviderConfig` entry in `LlmProxy::new()`

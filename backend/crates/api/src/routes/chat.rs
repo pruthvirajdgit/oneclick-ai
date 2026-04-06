@@ -326,7 +326,7 @@ async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) 
 
     // Parse the JSON output from `openclaw agent --json`
     // The response has a `payloads` array with text responses
-    tracing::debug!(stdout_len = stdout.len(), stdout_preview = %&stdout[..stdout.len().min(500)], "Agent stdout");
+    tracing::debug!(stdout_len = stdout.len(), stdout_preview = %&stdout[..stdout.floor_char_boundary(500)], "Agent stdout");
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
         if let Some(payloads) = data.get("payloads").and_then(|p| p.as_array()) {
             let texts: Vec<&str> = payloads
@@ -342,7 +342,7 @@ async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) 
     // If we couldn't parse JSON, return a generic error to avoid leaking
     // internal agent logs or error details to the client.
     if !stdout.trim().is_empty() {
-        tracing::warn!(stdout_preview = %&stdout[..stdout.len().min(500)], "Agent returned non-JSON output");
+        tracing::warn!(stdout_preview = %&stdout[..stdout.floor_char_boundary(500)], "Agent returned non-JSON output");
     }
     tracing::error!("Agent message failed");
     Err("Agent returned an unexpected response".into())

@@ -169,9 +169,9 @@ pub(crate) async fn send_openai_request(
     }
 
     let body = response.text().await.unwrap_or_default();
-    tracing::trace!(body_len = body.len(), body_preview = %&body[..body.len().min(500)], "Raw provider response");
+    tracing::trace!(body_len = body.len(), body_preview = %&body[..body.floor_char_boundary(500)], "Raw provider response");
     let completion: ChatCompletionResponse = serde_json::from_str(&body)
-        .map_err(|e| ProviderError::InvalidResponse(format!("{e}: {}", &body[..body.len().min(300)])))?;
+        .map_err(|e| ProviderError::InvalidResponse(format!("{e}: {}", &body[..body.floor_char_boundary(300)])))?;
 
     Ok(completion)
 }

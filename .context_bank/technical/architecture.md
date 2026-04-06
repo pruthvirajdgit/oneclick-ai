@@ -86,6 +86,6 @@ main.rs (binary) depends on all crates, wires them together.
 2. **Per-agent locking via DashMap.** No two concurrent operations (wake, sleep, destroy) can race on the same agent.
 3. **PostgreSQL is the source of truth for agent status.** Redis caches are secondary.
 4. **Agents are stateless from the backend's perspective.** All persistent state lives in PostgreSQL. Agent containers can be destroyed and recreated without data loss (except in-memory conversation cache).
-5. **Internal endpoints support dual auth**: Bearer token (with auth encoded in the API key, used by OpenClaw which can't send custom headers) OR legacy header-based auth (`X-Agent-Id`, `X-User-Id`, `X-Internal-Secret`). The `OPENROUTER_API_KEY` env var passed to agent containers encodes auth identity. Validated via DB ownership check (`SELECT EXISTS`).
+5. **Internal endpoints support dual auth**: Bearer token (format: `secret|agent_id|user_id`, used by OpenClaw which can't send custom headers) OR legacy header-based auth (`X-Agent-Id`, `X-User-Id`, `X-Internal-Secret`). The `OPENROUTER_API_KEY` env var passed to agent containers encodes auth identity as `{internal_secret}|{agent_id}|{user_id}`. Validated via DB ownership check (`SELECT EXISTS`).
 6. **Database FKs use ON DELETE CASCADE on usage tables** to ensure cleanup on agent/user deletion.
 7. **All time comparisons use UTC.** Day boundaries: `date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`.

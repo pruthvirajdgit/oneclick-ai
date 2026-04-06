@@ -28,3 +28,9 @@ backend/target/
 # Docker volumes
 pgdata/
 redisdata/
+
+# E2E test artifacts (JWT tokens, agent IDs)
+.e2e_*
+
+# E2E test scripts (WIP)
+e2e_tests/

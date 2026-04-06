@@ -38,7 +38,7 @@ Docker client is shared via `AppState` (not created per-message) and used for `d
 | DELETE | /api/schedules/{id} | JWT | Cancel schedule |
 | GET | /api/usage | JWT | Usage stats (today + all-time) |
 | GET | /api/notifications | JWT | List notifications |
-| POST | /internal/llm/v1/chat/completions | Bearer token OR X-Agent-Id/X-User-Id | LLM proxy (+ SSE conversion) |
+| POST | /internal/llm/v1/chat/completions | Bearer token OR X-Agent-Id/X-User-Id | LLM proxy (non-streaming; SSE conversion in internal.rs) |
 | POST | /internal/schedules | X-Agent-Id/X-User-Id | Agent creates schedule |
 | POST | /internal/notifications | X-Agent-Id/X-User-Id | Agent sends notification |
 | GET | /health | None | Liveness probe ("ok") |
@@ -48,7 +48,7 @@ Docker client is shared via `AppState` (not created per-message) and used for `d
 
 ## Middleware
 - **AuthUser**: Extracts JWT from `Authorization: Bearer` header (case-insensitive per RFC 7235). Makes `Claims` available.
-- **InternalAuth**: Extracts auth from `Authorization: Bearer` token OR legacy `X-Agent-Id`/`X-User-Id` headers. Auth can be encoded in the API key (since OpenClaw can't send custom headers). Confirms user owns agent via `SELECT EXISTS` DB query.
+- **InternalAuth**: Extracts auth from `Authorization: Bearer` token (format: `secret|agent_id|user_id` encoded in `OPENROUTER_API_KEY`) OR legacy `X-Agent-Id`/`X-User-Id` headers. Confirms user owns agent via `SELECT EXISTS` DB query.
 - **Rate Limit**: Split into two operations — `check_rate_limit` (read-only Redis GET pre-check before request) and `increment_rate_limit` (Redis INCR after successful LLM call only). Prevents counting failed requests toward limit.
 
 ## WebSocket Chat Flow

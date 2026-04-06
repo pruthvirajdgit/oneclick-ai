@@ -76,6 +76,11 @@ fn truncate_content(val: &mut serde_json::Value, max: usize) {
                 truncate_content(item, max);
             }
         }
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get_mut("text") {
+                truncate_content(text, max);
+            }
+        }
         _ => {}
     }
 }

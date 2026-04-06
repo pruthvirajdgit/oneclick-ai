@@ -68,7 +68,7 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 - Health check: HTTP probe on `:3000` with 90s start-period
 - Restart policy: none (backend manages lifecycle)
 - Env vars:
-  - `OPENROUTER_API_KEY` = `oneclick-proxy-routed` (placeholder — never real keys; encodes auth identity for internal endpoints)
+  - `OPENROUTER_API_KEY` = `{internal_secret}|{agent_id}|{user_id}` (encodes auth identity for internal endpoints; OpenClaw sends this as `Authorization: Bearer` header)
   - `OPENROUTER_BASE_URL` = `http://backend:8080/internal/llm/v1`
   - `OPENCLAW_GATEWAY_TOKEN` = `oneclick-internal`
   - `NODE_OPTIONS` = `--max-old-space-size=1280`
@@ -81,7 +81,7 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 - Gateway: `openclaw gateway run --verbose --token $TOKEN` (foreground, port 3000)
 - Auth: Required for non-loopback binding. Modes: `none`, `token`, `password`
 - Health: `openclaw health` CLI or HTTP health endpoint
-- LLM keys: `OPENROUTER_API_KEY` is always the placeholder `oneclick-proxy-routed` — real keys live on the backend only
+- LLM keys: `OPENROUTER_API_KEY` is set to `{internal_secret}|{agent_id}|{user_id}` — real provider keys live on the backend only
 - Dashboard: built-in Control UI at `http://host:port/#token=<token>`
 
 ### Known Operational Gotchas
