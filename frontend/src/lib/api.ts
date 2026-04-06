@@ -23,7 +23,7 @@ export async function apiFetch<T = unknown>(
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(
-      (body as Record<string, string>).detail ?? `Request failed (${res.status})`
+      (body as Record<string, string>).error ?? (body as Record<string, string>).detail ?? `Request failed (${res.status})`
     );
   }
 

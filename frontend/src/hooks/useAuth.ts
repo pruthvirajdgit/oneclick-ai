@@ -15,7 +15,7 @@ interface JwtPayload {
 }
 
 interface AuthResponse {
-  access_token: string;
+  token: string;
   user?: User;
 }
 
@@ -104,7 +104,7 @@ export function useAuth() {
       email,
       password,
     });
-    storeAuth(data.access_token, data.user);
+    storeAuth(data.token, data.user);
   }, []);
 
   const signup = useCallback(async (email: string, password: string) => {
@@ -112,7 +112,7 @@ export function useAuth() {
       email,
       password,
     });
-    storeAuth(data.access_token, data.user);
+    storeAuth(data.token, data.user);
   }, []);
 
   const logout = useCallback(() => {
