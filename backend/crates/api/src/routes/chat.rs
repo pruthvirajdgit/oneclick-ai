@@ -1,22 +1,17 @@
 //! WebSocket chat handler for real-time agent conversations.
 //!
-//! Flow: client connects → JWT validated → agent woken → backend opens a
-//! WebSocket to the agent's OpenClaw gateway → Ed25519 device handshake →
-//! chat messages are relayed with real token-by-token streaming.
+//! Flow: client connects → JWT validated → agent woken → backend POSTs to the
+//! in-container chat bridge (port 3001) → bridge connects to OpenClaw gateway
+//! via localhost WebSocket → SSE stream is parsed and forwarded token-by-token
+//! to the client WebSocket.
 
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey};
-use futures_util::{SinkExt, StreamExt};
-use rand::rngs::OsRng;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tokio_tungstenite::tungstenite;
 use uuid::Uuid;
 
 use oneclick_shared::auth::validate_token;
@@ -138,7 +133,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
 
         let _ = send_status(&mut socket, "Thinking...").await;
 
-        match agent_ws_chat(&container_name, &incoming.content, &mut socket).await {
+        match bridge_chat(&container_name, &incoming.content, &mut socket).await {
             Ok(_) => {}
             Err(e) => {
                 tracing::error!(error = %e, "Agent chat failed");
@@ -158,314 +153,111 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
     tracing::info!(agent_id = %agent_id, user_id = %user_id, "WebSocket chat session ended");
 }
 
-// ── Agent gateway WebSocket chat ───────────────────────────────────────
+// ── Chat bridge HTTP call ──────────────────────────────────────────────
 
-/// Connect to the agent's OpenClaw gateway, perform the Ed25519 device
-/// handshake, send a chat message, and stream delta tokens back to the client.
-async fn agent_ws_chat(
+/// POST to the in-container chat bridge and stream the SSE response back
+/// to the client WebSocket token-by-token.
+async fn bridge_chat(
     container_name: &str,
     message: &str,
     client_ws: &mut WebSocket,
 ) -> Result<String, String> {
-    // 1. Generate Ed25519 identity
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let raw_pub = verifying_key.as_bytes();
-    let device_id = hex::encode(Sha256::digest(raw_pub));
-    let pub_key_b64 = URL_SAFE_NO_PAD.encode(raw_pub);
+    let chat_url = format!("http://{}:3001/chat", container_name);
 
-    // 2. Connect to agent gateway
-    let uri = format!("ws://{}:3000/?token=oneclick-internal", container_name);
-    let request = tungstenite::http::Request::builder()
-        .uri(&uri)
-        .header("Origin", "http://127.0.0.1:3000")
-        .header(
-            "Sec-WebSocket-Key",
-            tungstenite::handshake::client::generate_key(),
-        )
-        .header("Upgrade", "websocket")
-        .header("Connection", "Upgrade")
-        .header("Sec-WebSocket-Version", "13")
-        .header("Host", format!("{}:3000", container_name))
-        .body(())
-        .map_err(|e| format!("Failed to build WS request: {e}"))?;
-
-    let (ws_stream, _) = tokio_tungstenite::connect_async(request)
+    let response = reqwest::Client::new()
+        .post(&chat_url)
+        .json(&serde_json::json!({ "message": message }))
+        .timeout(Duration::from_secs(180))
+        .send()
         .await
-        .map_err(|e| format!("Gateway connect failed: {e}"))?;
+        .map_err(|e| format!("Bridge request failed: {e}"))?;
 
-    let (mut gw_tx, mut gw_rx) = ws_stream.split();
-
-    // 3. Wait for connect.challenge
-    let nonce = recv_challenge(&mut gw_rx).await?;
-
-    // 4. Sign and send connect request
-    let scopes = "operator.admin,operator.read,operator.write,operator.approvals,operator.pairing";
-    let signed_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-    let gw_token = "oneclick-internal";
-
-    let sign_payload = format!(
-        "v2|{}|openclaw-control-ui|webchat|operator|{}|{}|{}|{}",
-        device_id, scopes, signed_at_ms, gw_token, nonce
-    );
-    let signature = signing_key.sign(sign_payload.as_bytes());
-    let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
-
-    let connect_msg = serde_json::json!({
-        "type": "req",
-        "id": "c1",
-        "method": "connect",
-        "params": {
-            "minProtocol": 3,
-            "maxProtocol": 3,
-            "client": {
-                "id": "openclaw-control-ui",
-                "platform": "linux",
-                "mode": "webchat",
-                "version": "2026.3.13",
-                "instanceId": "oneclick-backend"
-            },
-            "role": "operator",
-            "scopes": ["operator.admin", "operator.read", "operator.write", "operator.approvals", "operator.pairing"],
-            "device": {
-                "id": device_id,
-                "publicKey": pub_key_b64,
-                "signature": sig_b64,
-                "signedAt": signed_at_ms,
-                "nonce": nonce
-            },
-            "auth": { "token": gw_token },
-            "caps": ["tool-events"]
-        }
-    });
-
-    gw_tx
-        .send(tungstenite::Message::Text(connect_msg.to_string().into()))
-        .await
-        .map_err(|e| format!("Failed to send connect: {e}"))?;
-
-    // 5. Wait for hello-ok
-    wait_hello_ok(&mut gw_rx).await?;
-
-    // 6. Send chat message
-    let idempotency_key = Uuid::new_v4().to_string();
-    let chat_msg = serde_json::json!({
-        "type": "req",
-        "id": "ch1",
-        "method": "chat.send",
-        "params": {
-            "message": message,
-            "sessionKey": "main",
-            "idempotencyKey": idempotency_key
-        }
-    });
-
-    gw_tx
-        .send(tungstenite::Message::Text(chat_msg.to_string().into()))
-        .await
-        .map_err(|e| format!("Failed to send chat: {e}"))?;
-
-    // 7. Stream response tokens to client
-    let final_text = stream_chat_response(&mut gw_rx, client_ws).await?;
-
-    // Close gateway connection
-    let _ = gw_tx.send(tungstenite::Message::Close(None)).await;
-
-    Ok(final_text)
-}
-
-/// Wait for the `connect.challenge` event and extract the nonce.
-async fn recv_challenge<S>(gw_rx: &mut S) -> Result<String, String>
-where
-    S: StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
-{
-    let timeout = Duration::from_secs(10);
-    let msg = tokio::time::timeout(timeout, async {
-        while let Some(frame) = gw_rx.next().await {
-            match frame {
-                Ok(tungstenite::Message::Text(t)) => return Ok(t),
-                Ok(tungstenite::Message::Ping(_)) => continue,
-                Ok(tungstenite::Message::Close(_)) => {
-                    return Err("Gateway closed before challenge".to_string())
-                }
-                Err(e) => return Err(format!("Gateway recv error: {e}")),
-                _ => continue,
-            }
-        }
-        Err("Gateway stream ended before challenge".to_string())
-    })
-    .await
-    .map_err(|_| "Timeout waiting for challenge".to_string())??;
-
-    let v: serde_json::Value =
-        serde_json::from_str(&msg).map_err(|e| format!("Bad challenge JSON: {e}"))?;
-
-    if v.get("event").and_then(|e| e.as_str()) != Some("connect.challenge") {
-        return Err(format!("Expected connect.challenge, got: {msg}"));
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Bridge error: {body}"));
     }
 
-    v.pointer("/payload/nonce")
-        .and_then(|n| n.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "No nonce in challenge".to_string())
-}
+    // Stream SSE events from the response body
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut final_text = String::new();
 
-/// Wait for the `hello-ok` response to the connect request.
-async fn wait_hello_ok<S>(gw_rx: &mut S) -> Result<(), String>
-where
-    S: StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
-{
-    let timeout = Duration::from_secs(10);
-    let msg = tokio::time::timeout(timeout, async {
-        while let Some(frame) = gw_rx.next().await {
-            match frame {
-                Ok(tungstenite::Message::Text(t)) => return Ok(t),
-                Ok(tungstenite::Message::Ping(_)) => continue,
-                Ok(tungstenite::Message::Close(_)) => {
-                    return Err("Gateway closed before hello-ok".to_string())
-                }
-                Err(e) => return Err(format!("Gateway recv error: {e}")),
-                _ => continue,
-            }
-        }
-        Err("Gateway stream ended before hello-ok".to_string())
-    })
-    .await
-    .map_err(|_| "Timeout waiting for hello-ok".to_string())??;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("Stream error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
 
-    let v: serde_json::Value =
-        serde_json::from_str(&msg).map_err(|e| format!("Bad hello-ok JSON: {e}"))?;
+        // Process complete SSE events (delimited by \n\n)
+        while let Some(pos) = buffer.find("\n\n") {
+            let event = buffer[..pos].to_string();
+            buffer = buffer[pos + 2..].to_string();
 
-    // Accept: {"type":"res","id":"c1","ok":true,...}
-    if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
-        tracing::debug!("Gateway handshake complete (hello-ok)");
-        return Ok(());
-    }
+            for line in event.lines() {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" {
+                        return Ok(final_text);
+                    }
 
-    Err(format!("Gateway handshake failed: {msg}"))
-}
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                        let event_type = parsed
+                            .get("type")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("");
+                        let content = parsed
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+                        let msg_text = parsed
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("");
 
-/// Listen for `chat` events from the gateway, forwarding deltas to the client
-/// WebSocket. Returns the full final text.
-async fn stream_chat_response<S>(
-    gw_rx: &mut S,
-    client_ws: &mut WebSocket,
-) -> Result<String, String>
-where
-    S: StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
-{
-    let timeout = Duration::from_secs(180);
-    let result = tokio::time::timeout(timeout, async {
-        while let Some(frame) = gw_rx.next().await {
-            let text = match frame {
-                Ok(tungstenite::Message::Text(t)) => t,
-                Ok(tungstenite::Message::Ping(_)) => continue,
-                Ok(tungstenite::Message::Close(_)) => {
-                    return Err("Gateway closed during chat".to_string())
-                }
-                Err(e) => return Err(format!("Gateway recv error: {e}")),
-                _ => continue,
-            };
-
-            let v: serde_json::Value = match serde_json::from_str(&text) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            // Handle chat.send response (ack)
-            if v.get("type").and_then(|t| t.as_str()) == Some("res") {
-                if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
-                    let err_msg = v
-                        .pointer("/error/message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("Unknown gateway error");
-                    return Err(format!("chat.send rejected: {err_msg}"));
-                }
-                continue;
-            }
-
-            // Handle chat events
-            let event = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
-            if event != "chat" {
-                // Ignore non-chat events (e.g. tool events)
-                continue;
-            }
-
-            let payload = match v.get("payload") {
-                Some(p) => p,
-                None => continue,
-            };
-
-            let state = payload
-                .get("state")
-                .and_then(|s| s.as_str())
-                .unwrap_or("");
-
-            match state {
-                "delta" => {
-                    // Extract text from content array
-                    if let Some(text_content) = extract_text_from_content(payload) {
-                        if !text_content.is_empty() {
-                            let _ = send_json(
-                                client_ws,
-                                &OutgoingMessage {
-                                    msg_type: "stream".into(),
-                                    content: Some(text_content),
-                                    message: None,
-                                },
-                            )
-                            .await;
+                        match event_type {
+                            "stream" => {
+                                if !content.is_empty() {
+                                    let _ = send_json(
+                                        client_ws,
+                                        &OutgoingMessage {
+                                            msg_type: "stream".into(),
+                                            content: Some(content.to_string()),
+                                            message: None,
+                                        },
+                                    )
+                                    .await;
+                                }
+                            }
+                            "done" => {
+                                final_text = content.to_string();
+                                let _ = send_json(
+                                    client_ws,
+                                    &OutgoingMessage {
+                                        msg_type: "done".into(),
+                                        content: Some(final_text.clone()),
+                                        message: None,
+                                    },
+                                )
+                                .await;
+                            }
+                            "error" => {
+                                let err = if !msg_text.is_empty() {
+                                    msg_text
+                                } else {
+                                    content
+                                };
+                                return Err(format!("Agent error: {err}"));
+                            }
+                            _ => {}
                         }
                     }
                 }
-                "final" => {
-                    let full_text =
-                        extract_text_from_content(payload).unwrap_or_default();
-                    let _ = send_json(
-                        client_ws,
-                        &OutgoingMessage {
-                            msg_type: "done".into(),
-                            content: Some(full_text.clone()),
-                            message: None,
-                        },
-                    )
-                    .await;
-                    return Ok(full_text);
-                }
-                "error" => {
-                    let err_text =
-                        extract_text_from_content(payload).unwrap_or_default();
-                    return Err(format!("Agent error: {err_text}"));
-                }
-                _ => {
-                    // Other states (thinking, tool_use, etc.) — ignore or log
-                    tracing::debug!(state = %state, "Ignoring chat event state");
-                }
-            }
-        }
-        Err("Gateway stream ended without final response".to_string())
-    })
-    .await
-    .map_err(|_| "Timeout waiting for agent response".to_string())?;
-
-    result
-}
-
-/// Extract concatenated text from the `message.content` array.
-fn extract_text_from_content(payload: &serde_json::Value) -> Option<String> {
-    let content = payload.pointer("/message/content")?.as_array()?;
-    let mut text = String::new();
-    for item in content {
-        if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-            if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
-                text.push_str(t);
             }
         }
     }
-    Some(text)
+
+    if final_text.is_empty() {
+        Err("Bridge stream ended without final response".to_string())
+    } else {
+        Ok(final_text)
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

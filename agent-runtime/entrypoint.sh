@@ -251,4 +251,9 @@ export OLLAMA_HOST="${OLLAMA_HOST:-http://host.docker.internal:11434}"
 export OLLAMA_API_KEY="${OLLAMA_API_KEY:-ollama-local}"
 export NODE_OPTIONS="--max-old-space-size=1280"
 export OPENCLAW_GATEWAY_TOKEN="${GW_TOKEN}"
+
+# Start the chat bridge (HTTP→WS) as a background process
+node /usr/local/bin/chat-bridge.js &
+echo "   ✅ Chat bridge started on port 3001"
+
 exec openclaw gateway run --verbose --token "${GW_TOKEN}"

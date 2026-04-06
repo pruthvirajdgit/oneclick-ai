@@ -26,6 +26,9 @@ RUN chown node:node /home/node/.openclaw/plugins/oneclick-tools.js
 # Copy device auto-pairing script
 COPY --chmod=0644 pair-device.js /usr/local/lib/pair-device.js
 
+# Copy HTTP→WS chat bridge
+COPY --chmod=0644 chat-bridge.js /usr/local/bin/chat-bridge.js
+
 # Copy entrypoint with correct permissions
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/oneclick-entrypoint.sh
 
@@ -40,7 +43,7 @@ ENV AGENT_NAME="Assistant" \
     AGENT_PORT=3000 \
     TZ=Asia/Kolkata
 
-EXPOSE 3000
+EXPOSE 3000 3001
 
 # Health check — use a simple HTTP probe on the gateway port.
 # OpenClaw serves its Control UI at / once the gateway is ready.
