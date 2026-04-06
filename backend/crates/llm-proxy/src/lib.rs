@@ -18,6 +18,5 @@ pub mod types;
 pub use provider::{GroqProvider, LlmProvider, OpenRouterProvider, ProviderError};
 pub use service::{LlmProxy, ProviderConfig};
 pub use types::{
-    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice,
-    ChunkChoice, ChunkDelta, TokenUsage,
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, TokenUsage,
 };

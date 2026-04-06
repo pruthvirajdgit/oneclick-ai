@@ -222,21 +222,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
 
         match exec_agent_message(&state.docker, &container_id, &incoming.content).await {
             Ok(response) => {
-                // Simulate streaming by sending the response word-by-word.
-                // True token-level streaming requires agent-level changes (Phase 3).
-                let words: Vec<&str> = response.split_inclusive(char::is_whitespace).collect();
-                for word in &words {
-                    let _ = send_json(
-                        &mut socket,
-                        &OutgoingMessage {
-                            msg_type: "stream".into(),
-                            content: Some((*word).to_string()),
-                            message: None,
-                        },
-                    )
-                    .await;
-                    tokio::time::sleep(Duration::from_millis(30)).await;
-                }
                 let _ = send_json(
                     &mut socket,
                     &OutgoingMessage {
