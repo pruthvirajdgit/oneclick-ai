@@ -102,6 +102,20 @@ chown -R node:node /home/node/.openclaw
 chmod -R a+rw /home/node/.openclaw
 echo "   ✅ Config written (model: ${MODEL})"
 
+# ── 1b. Write auth profiles for embedded agent mode ──────────────────────────
+# When `openclaw agent` falls back to embedded mode, it reads API keys from
+# auth-profiles.json, not env vars. Write the OPENROUTER_API_KEY there.
+AUTH_DIR="/home/node/.openclaw/agents/main/agent"
+mkdir -p "${AUTH_DIR}"
+cat > "${AUTH_DIR}/auth-profiles.json" << AUTHEOF
+{
+  "openrouter": {
+    "apiKey": "${OPENROUTER_API_KEY}"
+  }
+}
+AUTHEOF
+chmod a+rw "${AUTH_DIR}/auth-profiles.json"
+
 # ── 2. Configure messaging channels (only if tokens provided) ────────────────
 CHANNELS=0
 

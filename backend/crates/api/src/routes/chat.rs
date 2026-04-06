@@ -343,13 +343,24 @@ async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) 
     // The response has a `payloads` array with text responses
     tracing::debug!(stdout_len = stdout.len(), stdout_preview = %&stdout[..stdout.floor_char_boundary(500)], "Agent stdout");
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        // Check if the agent reported an error (stopReason: "error")
+        let is_error = data
+            .pointer("/meta/stopReason")
+            .and_then(|v| v.as_str())
+            == Some("error");
+
         if let Some(payloads) = data.get("payloads").and_then(|p| p.as_array()) {
             let texts: Vec<&str> = payloads
                 .iter()
                 .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                 .collect();
             if !texts.is_empty() {
-                return Ok(texts.join("\n"));
+                let response = texts.join("\n");
+                if is_error {
+                    tracing::warn!(response = %response, "Agent returned an error response");
+                    return Err(format!("Agent error: {}", response));
+                }
+                return Ok(response);
             }
         }
     }
