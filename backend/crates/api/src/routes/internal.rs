@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -19,7 +19,8 @@ use oneclick_shared::errors::{AppError, AppResult};
 use oneclick_shared::models::notification::CreateNotificationRequest;
 use oneclick_shared::models::schedule::{ScheduleResponse, ScheduledJob};
 
-use oneclick_llm_proxy::{ChatCompletionRequest, ChatCompletionResponse};
+use oneclick_llm_proxy::ChatCompletionRequest;
+use futures_util::StreamExt;
 
 use crate::middleware::rate_limit::{check_rate_limit, increment_rate_limit};
 use crate::state::AppState;
@@ -125,68 +126,6 @@ pub struct InternalCreateScheduleRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming helper
-// ---------------------------------------------------------------------------
-
-/// SSE-compatible streaming chunk, mirroring OpenAI's `chat.completion.chunk`.
-#[derive(Serialize)]
-struct StreamChunk {
-    id: String,
-    object: String,
-    created: i64,
-    model: String,
-    choices: Vec<StreamChoice>,
-    usage: Option<oneclick_llm_proxy::TokenUsage>,
-}
-
-#[derive(Serialize)]
-struct StreamChoice {
-    index: i32,
-    delta: Delta,
-    finish_reason: Option<String>,
-}
-
-#[derive(Serialize)]
-struct Delta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-}
-
-/// Convert a non-streaming `ChatCompletionResponse` into a single SSE chunk.
-fn to_stream_chunk(resp: &ChatCompletionResponse) -> StreamChunk {
-    let choices = resp
-        .choices
-        .iter()
-        .map(|c| {
-            let content = match &c.message.content {
-                serde_json::Value::String(s) => Some(s.clone()),
-                serde_json::Value::Null => None,
-                other => Some(other.to_string()),
-            };
-            StreamChoice {
-                index: c.index,
-                delta: Delta {
-                    role: Some(c.message.role.clone()),
-                    content,
-                },
-                finish_reason: c.finish_reason.clone(),
-            }
-        })
-        .collect();
-
-    StreamChunk {
-        id: resp.id.clone(),
-        object: "chat.completion.chunk".to_string(),
-        created: resp.created,
-        model: resp.model.clone(),
-        choices,
-        usage: resp.usage.clone(),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Endpoints
 // ---------------------------------------------------------------------------
 
@@ -235,29 +174,56 @@ pub async fn llm_proxy(
             .await?;
     }
 
-    let response = state
-        .llm_proxy
-        .chat_completion(internal.user_id, internal.agent_id, request)
-        .await?;
-
-    // Increment Redis counter only after a successful LLM call so failed
-    // requests don't consume quota.
-    if tier.0 != "pro" {
-        let _ = increment_rate_limit(&state.redis, internal.user_id).await;
-    }
-
     if wants_stream {
-        // Convert the non-streaming response to SSE so OpenClaw can parse it.
-        let chunk = to_stream_chunk(&response);
-        let chunk_json = serde_json::to_string(&chunk).unwrap_or_default();
-        let sse_body = format!("data: {chunk_json}\n\ndata: [DONE]\n\n");
+        // True SSE streaming — forward chunks from the provider.
+        let chunk_stream = state
+            .llm_proxy
+            .chat_completion_stream(internal.user_id, internal.agent_id, request)
+            .await?;
+
+        // Increment Redis counter now that the provider accepted the request.
+        if tier.0 != "pro" {
+            let _ = increment_rate_limit(&state.redis, internal.user_id).await;
+        }
+
+        let sse_stream = chunk_stream.map(|result| match result {
+            Ok(chunk) => {
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                Ok::<_, std::convert::Infallible>(format!("data: {json}\n\n"))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "SSE stream chunk error");
+                Ok(format!(
+                    "data: {{\"error\":\"{}\"}}\n\n",
+                    e.to_string().replace('"', "'")
+                ))
+            }
+        });
+
+        // Append a final `data: [DONE]` sentinel after all chunks.
+        let done_stream = futures_util::stream::once(async {
+            Ok::<_, std::convert::Infallible>("data: [DONE]\n\n".to_string())
+        });
+        let full_stream = sse_stream.chain(done_stream);
 
         Ok(axum::response::Response::builder()
             .header("content-type", "text/event-stream")
-            .body(axum::body::Body::from(sse_body))
+            .header("cache-control", "no-cache")
+            .body(axum::body::Body::from_stream(full_stream))
             .unwrap()
             .into_response())
     } else {
+        let response = state
+            .llm_proxy
+            .chat_completion(internal.user_id, internal.agent_id, request)
+            .await?;
+
+        // Increment Redis counter only after a successful LLM call so failed
+        // requests don't consume quota.
+        if tier.0 != "pro" {
+            let _ = increment_rate_limit(&state.redis, internal.user_id).await;
+        }
+
         Ok(Json(response).into_response())
     }
 }

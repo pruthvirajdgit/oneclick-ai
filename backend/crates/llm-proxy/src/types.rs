@@ -89,3 +89,55 @@ pub struct TokenUsage {
     /// Total tokens (prompt + completion).
     pub total_tokens: i32,
 }
+
+// ---------------------------------------------------------------------------
+// Streaming (SSE) types — mirrors OpenAI `chat.completion.chunk`
+// ---------------------------------------------------------------------------
+
+/// A single SSE chunk from a streaming chat completion response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionChunk {
+    /// Unique identifier for the completion.
+    pub id: String,
+
+    /// Object type (always `"chat.completion.chunk"`).
+    pub object: String,
+
+    /// Unix timestamp of creation.
+    pub created: i64,
+
+    /// Model used for the completion.
+    pub model: String,
+
+    /// Delta choices for this chunk.
+    pub choices: Vec<ChunkChoice>,
+
+    /// Token usage (only present on the final chunk for some providers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+}
+
+/// A single choice delta within a streaming chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkChoice {
+    /// Index of this choice.
+    pub index: i32,
+
+    /// Incremental content delta.
+    pub delta: ChunkDelta,
+
+    /// Finish reason (only present on the last chunk).
+    pub finish_reason: Option<String>,
+}
+
+/// Incremental content in a streaming chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkDelta {
+    /// Role of the message author (only in the first chunk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+
+    /// Token content (absent from the first and last chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}

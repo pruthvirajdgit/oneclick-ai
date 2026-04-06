@@ -15,8 +15,8 @@ use uuid::Uuid;
 use oneclick_shared::config::Config;
 use oneclick_shared::errors::{AppError, AppResult};
 
-use crate::provider::{send_openai_request, ProviderError};
-use crate::types::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage};
+use crate::provider::{send_openai_request, send_openai_request_stream, BoxStream, ProviderError};
+use crate::types::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatMessage};
 
 // ---------------------------------------------------------------------------
 // Message truncation
@@ -233,6 +233,91 @@ impl LlmProxy {
                             model = %model,
                             error = %e,
                             "Provider failed, trying next"
+                        );
+                        last_error = Some(e);
+                    }
+                }
+            }
+        }
+
+        let detail = last_error
+            .map(|e| format!("last error: {e}"))
+            .unwrap_or_else(|| "no providers configured".to_string());
+
+        Err(AppError::Internal(format!(
+            "All LLM providers failed ({detail})"
+        )))
+    }
+
+    /// Route a streaming chat completion request through the fallback chain.
+    ///
+    /// Similar to [`chat_completion`] but returns a stream of [`ChatCompletionChunk`]
+    /// objects for token-by-token delivery. The provider is called with `stream: true`.
+    ///
+    /// **Note:** Usage logging happens after the first provider succeeds (before
+    /// streaming starts), using estimated token counts. Exact counts may differ.
+    pub async fn chat_completion_stream(
+        &self,
+        user_id: Uuid,
+        agent_id: Uuid,
+        request: ChatCompletionRequest,
+    ) -> AppResult<BoxStream<'static, Result<ChatCompletionChunk, ProviderError>>> {
+        let mut last_error: Option<ProviderError> = None;
+
+        for provider in &self.providers {
+            for model in &provider.models {
+                let mut req = request.clone();
+                req.model = model.clone();
+                req.extra = serde_json::Value::Object(serde_json::Map::new());
+                req.stream = Some(true);
+                truncate_messages(&mut req.messages, MAX_MESSAGE_CHARS);
+
+                match send_openai_request_stream(
+                    &self.client,
+                    &provider.base_url,
+                    &provider.api_key,
+                    &req,
+                )
+                .await
+                {
+                    Ok(stream) => {
+                        tracing::info!(
+                            provider = %provider.name,
+                            model = %model,
+                            "Streaming chat completion started"
+                        );
+
+                        // Log approximate usage (prompt tokens only; completion
+                        // tokens will be zero since we haven't received them yet).
+                        let estimated_prompt_tokens =
+                            (char_total(&req.messages) / 3).min(i32::MAX as usize) as i32;
+                        let _ = self
+                            .log_usage(
+                                user_id,
+                                agent_id,
+                                model,
+                                &provider.name,
+                                estimated_prompt_tokens,
+                                0,
+                            )
+                            .await;
+
+                        return Ok(stream);
+                    }
+                    Err(ProviderError::RateLimited(msg)) => {
+                        tracing::warn!(
+                            provider = %provider.name,
+                            model = %model,
+                            "Rate limited by provider (stream): {}", msg
+                        );
+                        last_error = Some(ProviderError::RateLimited(msg));
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            provider = %provider.name,
+                            model = %model,
+                            error = %e,
+                            "Provider streaming failed, trying next"
                         );
                         last_error = Some(e);
                     }
