@@ -81,6 +81,7 @@ async function main() {
 
   console.log("[pair-device] Waiting for gateway...");
   const ready = await waitForGateway();
+  if (!ready) {
     console.log("[pair-device] Gateway not ready after timeout, exiting.");
     return;
   }

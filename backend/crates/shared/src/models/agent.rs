@@ -47,16 +47,30 @@ pub struct AgentResponse {
     pub model: String,
     pub last_active: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// URL to access the agent's OpenClaw chat UI directly.
+    pub chat_url: Option<String>,
 }
 
 impl From<Agent> for AgentResponse {
     fn from(a: Agent) -> Self {
+        let chat_url = a
+            .container_name
+            .as_ref()
+            .map(|name| format!("http://{name}.localhost"));
         Self {
             id: a.id,
             status: a.status,
             model: a.model,
             last_active: a.last_active,
             created_at: a.created_at,
+            chat_url,
         }
     }
+}
+
+/// Response from the wake endpoint.
+#[derive(Debug, Serialize)]
+pub struct WakeResponse {
+    pub status: AgentStatus,
+    pub chat_url: String,
 }

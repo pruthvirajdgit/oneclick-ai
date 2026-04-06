@@ -157,25 +157,71 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
 
 /// POST to the in-container chat bridge and stream the SSE response back
 /// to the client WebSocket token-by-token.
+///
+/// Retries up to 10 times with 3s delay if the bridge returns 503
+/// (gateway not connected yet — common right after agent wake).
 async fn bridge_chat(
     container_name: &str,
     message: &str,
     client_ws: &mut WebSocket,
 ) -> Result<String, String> {
     let chat_url = format!("http://{}:3001/chat", container_name);
+    let client = reqwest::Client::new();
 
-    let response = reqwest::Client::new()
-        .post(&chat_url)
-        .json(&serde_json::json!({ "message": message }))
-        .timeout(Duration::from_secs(180))
-        .send()
-        .await
-        .map_err(|e| format!("Bridge request failed: {e}"))?;
+    let mut last_err = String::new();
+    for attempt in 1..=10 {
+        let result = client
+            .post(&chat_url)
+            .json(&serde_json::json!({ "message": message }))
+            .timeout(Duration::from_secs(180))
+            .send()
+            .await;
 
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("Bridge error: {body}"));
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                // Success — proceed to stream SSE below
+                return stream_bridge_response(resp, client_ws).await;
+            }
+            Ok(resp) if resp.status().as_u16() == 503 && attempt < 10 => {
+                let body = resp.text().await.unwrap_or_default();
+                tracing::info!(
+                    attempt,
+                    container = container_name,
+                    "Bridge not ready (503: {body}), retrying in 3s..."
+                );
+                let _ =
+                    send_status(client_ws, "Connecting to agent (attempt {attempt}/10)...").await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                last_err = format!("Bridge 503: {body}");
+            }
+            Ok(resp) => {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Bridge error: {body}"));
+            }
+            Err(e) if attempt < 10 => {
+                tracing::info!(
+                    attempt,
+                    container = container_name,
+                    error = %e,
+                    "Bridge request failed, retrying in 3s..."
+                );
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                last_err = format!("Bridge request failed: {e}");
+            }
+            Err(e) => {
+                return Err(format!("Bridge request failed after retries: {e}"));
+            }
+        }
     }
+
+    Err(format!("Bridge not ready after 10 attempts: {last_err}"))
+}
+
+/// Stream SSE response from bridge and forward tokens to client WebSocket.
+async fn stream_bridge_response(
+    response: reqwest::Response,
+    client_ws: &mut WebSocket,
+) -> Result<String, String> {
 
     // Stream SSE events from the response body
     let mut stream = response.bytes_stream();

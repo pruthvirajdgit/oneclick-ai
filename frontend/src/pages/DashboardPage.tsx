@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import {
@@ -36,6 +35,7 @@ interface Agent {
   model: string;
   last_active: string | null;
   created_at: string;
+  chat_url: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -66,8 +66,6 @@ const REFRESH_INTERVAL = 30_000;
 
 // ── Component ──────────────────────────────────────────────────
 export default function DashboardPage() {
-  const navigate = useNavigate();
-
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -75,6 +73,7 @@ export default function DashboardPage() {
   const [model, setModel] = useState("groq/llama-3.3-70b-versatile");
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [wakingId, setWakingId] = useState<string | null>(null);
 
   // ── Fetch agents ───────────────────────────────────────────
   const fetchAgents = useCallback(async (showLoading = false) => {
@@ -130,6 +129,31 @@ export default function DashboardPage() {
       toast.error(err instanceof Error ? err.message : "Failed to delete agent");
     } finally {
       setDeleting(false);
+    }
+  }
+
+  // ── Wake agent & open OpenClaw UI in new tab ──────────────
+  async function handleChat(agent: Agent) {
+    // If already running and we have the URL, open directly
+    if (agent.status === "running" && agent.chat_url) {
+      window.open(agent.chat_url, "_blank", "noopener");
+      return;
+    }
+
+    setWakingId(agent.id);
+    try {
+      const result = await api.post<{ status: string; chat_url: string }>(
+        `/agents/${agent.id}/wake`,
+        {}
+      );
+      window.open(result.chat_url, "_blank", "noopener");
+      await fetchAgents(false);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to wake agent"
+      );
+    } finally {
+      setWakingId(null);
     }
   }
 
@@ -244,10 +268,20 @@ export default function DashboardPage() {
                   <Button
                     size="sm"
                     className="flex-1 bg-indigo-600 text-white hover:bg-indigo-700"
-                    onClick={() => navigate(`/chat/${agent.id}`)}
+                    onClick={() => handleChat(agent)}
+                    disabled={wakingId === agent.id}
                   >
-                    <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
-                    Chat
+                    {wakingId === agent.id ? (
+                      <>
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        Waking…
+                      </>
+                    ) : (
+                      <>
+                        <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                        Chat
+                      </>
+                    )}
                   </Button>
                   <Button
                     size="sm"
