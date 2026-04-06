@@ -23,6 +23,9 @@ COPY --chmod=0644 oneclick-tools.js /home/node/.openclaw/plugins/oneclick-tools.
 COPY --chmod=0644 oneclick-tools.js /opt/oneclick-tools.js
 RUN chown node:node /home/node/.openclaw/plugins/oneclick-tools.js
 
+# Copy device auto-pairing script
+COPY --chmod=0644 pair-device.js /usr/local/lib/pair-device.js
+
 # Copy entrypoint with correct permissions
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/oneclick-entrypoint.sh
 

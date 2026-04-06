@@ -57,6 +57,11 @@ async-trait = "0.1"
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 dashmap = "6"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+hex = "0.4"
 
 [workspace.package]
 version = "0.1.0"
