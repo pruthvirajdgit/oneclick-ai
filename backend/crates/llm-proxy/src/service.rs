@@ -58,11 +58,16 @@ fn char_total(messages: &[ChatMessage]) -> usize {
     messages.iter().map(|m| content_len(&m.content)).sum()
 }
 
+/// Maximum total character count for message content sent to providers.
+/// Rough heuristic (~2-3 chars per token) to stay within TPM limits.
+const MAX_MESSAGE_CHARS: usize = 8000;
+
 fn truncate_content(val: &mut serde_json::Value, max: usize) {
     match val {
         serde_json::Value::String(s) => {
             if s.len() > max {
-                s.truncate(max);
+                let truncate_at = s.floor_char_boundary(max);
+                s.truncate(truncate_at);
                 s.push_str("...[truncated]");
             }
         }
@@ -178,7 +183,7 @@ impl LlmProxy {
                 // Force non-streaming — the proxy expects a single JSON response.
                 req.stream = Some(false);
                 // Truncate messages to stay within provider token limits.
-                truncate_messages(&mut req.messages, 8000);
+                truncate_messages(&mut req.messages, MAX_MESSAGE_CHARS);
 
                 match self.try_provider(provider, &req).await {
                     Ok(response) => {

@@ -344,7 +344,7 @@ async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) 
     if !stdout.trim().is_empty() {
         tracing::warn!(stdout_preview = %&stdout[..stdout.len().min(500)], "Agent returned non-JSON output");
     }
-    tracing::error!("Agent message failed", );
+    tracing::error!("Agent message failed");
     Err("Agent returned an unexpected response".into())
 }
 
