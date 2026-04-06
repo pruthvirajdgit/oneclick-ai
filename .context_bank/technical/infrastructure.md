@@ -59,21 +59,29 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 
 ## Agent Containers
 - Image: `oneclick-agent:latest` (custom OpenClaw build from `agent-runtime/Dockerfile`)
-- Memory: 4GB default (configurable via `AGENT_MEMORY_LIMIT`). OpenClaw startup peak exceeds 2GB; steady state ~500MB. `NODE_OPTIONS=--max-old-space-size=1280` constrains heap.
+- Memory: 4GB default (configurable via `AGENT_MEMORY_LIMIT`). OpenClaw startup peak exceeds 2GB; steady state ~500MB.
 - CPU: 0.5 cores (configurable via `AGENT_CPU_LIMIT`)
 - Network: `oneclick-net`
 - Labels: `oneclick.agent_id`, `oneclick.user_id`
-- Env vars: `OPENROUTER_BASE_URL=http://backend:8080/internal/llm/v1`, `DEFAULT_MODEL`
+- TTY required: `tty: true` (gateway needs a TTY to run properly)
+- Named volume: `oneclick-agent-{container_name}:/home/node/.openclaw` (state persistence)
+- Health check: HTTP probe on `:3000` with 90s start-period
 - Restart policy: none (backend manages lifecycle)
+- Env vars:
+  - `OPENROUTER_API_KEY` = `oneclick-proxy-routed` (placeholder — never real keys; encodes auth identity for internal endpoints)
+  - `OPENROUTER_BASE_URL` = `http://backend:8080/internal/llm/v1`
+  - `OPENCLAW_GATEWAY_TOKEN` = `oneclick-internal`
+  - `NODE_OPTIONS` = `--max-old-space-size=1280`
+  - `DEFAULT_MODEL`
 
 ### OpenClaw Runtime Details
 - Binary: `/usr/local/bin/openclaw` (Node.js, requires v22.12+)
 - Base image: `ghcr.io/openclaw/openclaw:latest` (Debian 12 bookworm, runs as `node` UID 1000)
-- Config: `~/.openclaw/openclaw.json` (generated from env vars by `entrypoint.sh`)
+- Config: `~/.openclaw/openclaw.json` (generated from env vars by `entrypoint.sh`). Includes `openrouter` provider pointing to backend proxy and `controlUi.allowedOrigins: ["*"]` (dev only).
 - Gateway: `openclaw gateway run --verbose --token $TOKEN` (foreground, port 3000)
 - Auth: Required for non-loopback binding. Modes: `none`, `token`, `password`
 - Health: `openclaw health` CLI or HTTP health endpoint
-- LLM keys: reads `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` directly from env
+- LLM keys: `OPENROUTER_API_KEY` is always the placeholder `oneclick-proxy-routed` — real keys live on the backend only
 - Dashboard: built-in Control UI at `http://host:port/#token=<token>`
 
 ### Known Operational Gotchas
