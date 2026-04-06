@@ -25,9 +25,15 @@ export default function SignupPage() {
     return <Navigate to="/dashboard" replace />;
   }
 
+  const passwordTooShort = password.length > 0 && password.length < 8;
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
+      return;
+    }
     if (password !== confirm) {
       setError("Passwords do not match");
       return;
@@ -79,7 +85,13 @@ export default function SignupPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
+                minLength={8}
               />
+              {passwordTooShort && (
+                <p className="text-xs text-amber-600">
+                  Must be at least 8 characters
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="confirm">Confirm password</Label>
@@ -95,7 +107,7 @@ export default function SignupPage() {
           </CardContent>
           <CardFooter className="flex flex-col gap-4">
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Creating account…" : "Sign up"}
+              {loading ? "Creating account…" : "Create Account"}
             </Button>
             <p className="text-sm text-muted-foreground">
               Already have an account?{" "}
