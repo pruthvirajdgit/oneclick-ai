@@ -139,12 +139,6 @@ impl AgentRuntime for DockerRuntime {
                 "OPENROUTER_API_KEY={}|{}|{}",
                 config.internal_secret, agent.id, agent.user_id
             ),
-            // OneClick agent tools plugin env vars — used by oneclick-tools.js
-            // to call backend internal APIs (schedules, notifications)
-            "ONECLICK_BACKEND_URL=http://backend:8080".to_string(),
-            format!("ONECLICK_AGENT_ID={}", agent.id),
-            format!("ONECLICK_USER_ID={}", agent.user_id),
-            format!("ONECLICK_INTERNAL_SECRET={}", config.internal_secret),
         ];
 
         let mut labels = HashMap::new();
