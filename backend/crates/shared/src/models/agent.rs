@@ -53,10 +53,7 @@ pub struct AgentResponse {
 
 impl From<Agent> for AgentResponse {
     fn from(a: Agent) -> Self {
-        let chat_url = a
-            .container_name
-            .as_ref()
-            .map(|name| format!("http://{name}.localhost"));
+        let chat_url = Some(format!("/agent-ui/{}", a.id));
         Self {
             id: a.id,
             status: a.status,

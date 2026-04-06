@@ -1,23 +1,10 @@
 services:
-  traefik:
-    image: traefik:v3.3
-    command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-    ports:
-      - "80:80"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - oneclick-net
-    restart: unless-stopped
-
   frontend:
     build: ./frontend
     container_name: oneclick-frontend
     restart: unless-stopped
     ports:
+      - "80:80"
       - "3000:80"
     networks:
       - oneclick-net
@@ -54,11 +41,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.backend.entrypoints=web"
-      - "traefik.http.services.backend.loadbalancer.server.port=8080"
     networks:
       - oneclick-net
     restart: unless-stopped

@@ -127,15 +127,10 @@ async fn wake_agent(
         return Err(AppError::NotFound(format!("Agent {id} not found")));
     }
 
-    let container_name = agent
-        .container_name
-        .clone()
-        .ok_or_else(|| AppError::Internal("Agent has no container name".into()))?;
-
     // Blocks until healthy or returns error after retries exhausted.
     let agent = state.orchestrator.ensure_ready(agent.id).await?;
 
-    let chat_url = format!("http://{container_name}.localhost");
+    let chat_url = format!("/agent-ui/{id}");
     tracing::info!(agent_id = %id, %chat_url, "Agent woken — chat URL ready");
 
     Ok(Json(WakeResponse {

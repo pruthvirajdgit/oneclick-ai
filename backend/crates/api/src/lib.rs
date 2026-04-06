@@ -25,7 +25,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/agents/{id}/chat", get(routes::chat::ws_handler))
         .nest("/api/schedules", routes::schedules::routes())
         .route("/api/usage", get(routes::usage::get_usage))
-        .nest("/api/notifications", routes::notifications::routes());
+        .nest("/api/notifications", routes::notifications::routes())
+        .route("/agent-ui/{id}", get(routes::agent_ui::proxy_agent_ui))
+        .route("/agent-ui/{id}/{*rest}", get(routes::agent_ui::proxy_agent_ui));
 
     let internal_routes = Router::new()
         .route(

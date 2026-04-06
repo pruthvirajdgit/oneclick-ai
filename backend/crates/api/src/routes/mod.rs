@@ -1,5 +1,6 @@
 //! Route modules for all API endpoints.
 
+pub mod agent_ui;
 pub mod agents;
 pub mod auth;
 pub mod chat;

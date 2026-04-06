@@ -159,22 +159,6 @@ impl AgentRuntime for DockerRuntime {
         labels.insert("oneclick.agent_id".to_string(), agent.id.to_string());
         labels.insert("oneclick.user_id".to_string(), agent.user_id.to_string());
 
-        // Traefik dynamic routing: expose the OpenClaw gateway UI at
-        // http://{container_name}.localhost so users can chat directly.
-        labels.insert("traefik.enable".to_string(), "true".to_string());
-        labels.insert(
-            format!("traefik.http.routers.{name}.rule"),
-            format!("Host(`{name}.localhost`)"),
-        );
-        labels.insert(
-            format!("traefik.http.routers.{name}.entrypoints"),
-            "web".to_string(),
-        );
-        labels.insert(
-            format!("traefik.http.services.{name}.loadbalancer.server.port"),
-            "3000".to_string(),
-        );
-
         let mut endpoints = HashMap::new();
         endpoints.insert(
             config.docker_network.clone(),
