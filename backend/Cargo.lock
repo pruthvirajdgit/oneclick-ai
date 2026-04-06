@@ -1652,6 +1652,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures-util",
  "oneclick-shared",
  "reqwest",
  "serde",
