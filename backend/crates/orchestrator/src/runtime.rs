@@ -123,11 +123,19 @@ impl AgentRuntime for DockerRuntime {
             "Creating agent container"
         );
 
+        // Ensure model uses openrouter/ prefix so OpenClaw routes through our proxy.
+        // Without this, OpenClaw tries to call providers (groq, anthropic) directly.
+        let proxy_model = if agent.model.starts_with("openrouter/") {
+            agent.model.clone()
+        } else {
+            format!("openrouter/{}", agent.model)
+        };
+
         let env = vec![
             // Route LLM traffic through backend proxy (not directly to providers)
             "OPENROUTER_BASE_URL=http://backend:8080/internal/llm/v1".to_string(),
-            format!("DEFAULT_MODEL={}", agent.model),
-            format!("AGENT_MODEL={}", agent.model),
+            format!("DEFAULT_MODEL={}", proxy_model),
+            format!("AGENT_MODEL={}", proxy_model),
             format!("AGENT_NAME=agent-{}", &agent.id.to_string()[..8]),
             "AGENT_PORT=3000".to_string(),
             "OPENCLAW_GATEWAY_TOKEN=oneclick-internal".to_string(),
