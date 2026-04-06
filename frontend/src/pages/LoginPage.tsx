@@ -44,8 +44,8 @@ export default function LoginPage() {
           <div className="mx-auto mb-4 h-12 w-12 rounded-xl bg-primary flex items-center justify-center">
             <span className="text-primary-foreground font-bold text-xl">O</span>
           </div>
-          <CardTitle className="text-2xl font-bold">Welcome back</CardTitle>
-          <CardDescription>Sign in to your OneClick.ai account</CardDescription>
+          <CardTitle className="text-2xl font-bold">Sign in to OneClick.ai</CardTitle>
+          <CardDescription>Your AI Workforce. One Click.</CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
