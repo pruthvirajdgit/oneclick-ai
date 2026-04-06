@@ -4,8 +4,6 @@
 
 Open-source infrastructure for deploying and managing AI employees within your organization. Clone, configure, run — every team member gets a personal AI agent that works 24/7, executes tasks on schedule, and costs nothing when idle.
 
-> **Not a SaaS.** You own the infrastructure, the data, and the agents. Run it on your own servers — on-prem, in your cloud, or on a single laptop.
-
 ---
 
 ## Why OneClick.ai?
