@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -7,6 +8,12 @@ import {
   Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
+
+interface Notification {
+  id: number;
+  read: boolean;
+}
 
 const navItems = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
@@ -17,6 +24,23 @@ const navItems = [
 ];
 
 export function Sidebar() {
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const fetchUnread = useCallback(async () => {
+    try {
+      const data = await api.get<Notification[]>("/notifications");
+      setUnreadCount(data.filter((n) => !n.read).length);
+    } catch {
+      // silently fail — badge is non-critical
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUnread();
+    const id = setInterval(fetchUnread, 60_000);
+    return () => clearInterval(id);
+  }, [fetchUnread]);
+
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-border bg-card">
       <div className="flex items-center gap-2 px-6 py-5 border-b border-border">
@@ -44,6 +68,11 @@ export function Sidebar() {
           >
             <Icon className="h-5 w-5" />
             {label}
+            {to === "/notifications" && unreadCount > 0 && (
+              <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-semibold text-white">
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>
