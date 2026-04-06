@@ -11,7 +11,6 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Dialog,
@@ -73,7 +72,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [model, setModel] = useState("openrouter/auto");
+  const [model, setModel] = useState("groq/llama-3.3-70b-versatile");
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -109,7 +108,7 @@ export default function DashboardPage() {
       await api.post("/agents", { model });
       toast.success("Agent created!");
       setCreateOpen(false);
-      setModel("openrouter/auto");
+      setModel("groq/llama-3.3-70b-versatile");
       await fetchAgents(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to create agent");
@@ -278,12 +277,30 @@ export default function DashboardPage() {
           <div className="space-y-3 py-2">
             <div className="space-y-1.5">
               <Label htmlFor="model-select">Model</Label>
-              <Input
+              <select
                 id="model-select"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="openrouter/auto"
-              />
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <optgroup label="Groq (Fast, Free Tier)">
+                  <option value="groq/llama-3.3-70b-versatile">Llama 3.3 70B — Best quality</option>
+                  <option value="groq/llama-3.1-8b-instant">Llama 3.1 8B — Fast responses</option>
+                  <option value="groq/llama-guard-3-8b">Llama Guard 3 8B — Safety-focused</option>
+                  <option value="groq/gemma2-9b-it">Gemma 2 9B — Google model</option>
+                  <option value="groq/mixtral-8x7b-32768">Mixtral 8x7B — Large context</option>
+                </optgroup>
+                <optgroup label="OpenRouter (Multi-provider)">
+                  <option value="openrouter/auto">Auto — Best available</option>
+                  <option value="openrouter/nvidia/llama-3.1-nemotron-70b-instruct:free">Nemotron 70B — Free</option>
+                  <option value="openrouter/meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B — Free</option>
+                  <option value="openrouter/qwen/qwen-2.5-72b-instruct:free">Qwen 2.5 72B — Free</option>
+                  <option value="openrouter/google/gemma-2-9b-it:free">Gemma 2 9B — Free</option>
+                </optgroup>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Groq models are fastest. OpenRouter provides free fallback options.
+              </p>
             </div>
           </div>
 
