@@ -16,9 +16,11 @@ pub struct AppState {
     pub redis: deadpool_redis::Pool,
     pub orchestrator: Arc<Orchestrator>,
     pub llm_proxy: Arc<LlmProxy>,
+    pub docker: Arc<bollard::Docker>,
     pub metrics_handle: PrometheusHandle,
 }
 ```
+Docker client is shared via `AppState` (not created per-message) and used for `docker exec` into agent containers.
 
 ## Route Map
 | Method | Path | Auth | Handler |
@@ -36,7 +38,7 @@ pub struct AppState {
 | DELETE | /api/schedules/{id} | JWT | Cancel schedule |
 | GET | /api/usage | JWT | Usage stats (today + all-time) |
 | GET | /api/notifications | JWT | List notifications |
-| POST | /internal/llm/v1/chat/completions | X-Agent-Id/X-User-Id | LLM proxy |
+| POST | /internal/llm/v1/chat/completions | Bearer token OR X-Agent-Id/X-User-Id | LLM proxy (non-streaming; SSE conversion in internal.rs) |
 | POST | /internal/schedules | X-Agent-Id/X-User-Id | Agent creates schedule |
 | POST | /internal/notifications | X-Agent-Id/X-User-Id | Agent sends notification |
 | GET | /health | None | Liveness probe ("ok") |
@@ -46,16 +48,18 @@ pub struct AppState {
 
 ## Middleware
 - **AuthUser**: Extracts JWT from `Authorization: Bearer` header (case-insensitive per RFC 7235). Makes `Claims` available.
-- **InternalAuth**: Extracts `X-Agent-Id` and `X-User-Id` headers; validates `X-Internal-Secret`; confirms user owns agent via `SELECT EXISTS` DB query.
+- **InternalAuth**: Extracts auth from `Authorization: Bearer` token (format: `secret|agent_id|user_id` encoded in `OPENROUTER_API_KEY`) OR legacy `X-Agent-Id`/`X-User-Id` headers. Confirms user owns agent via `SELECT EXISTS` DB query.
 - **Rate Limit**: Split into two operations — `check_rate_limit` (read-only Redis GET pre-check before request) and `increment_rate_limit` (Redis INCR after successful LLM call only). Prevents counting failed requests toward limit.
 
 ## WebSocket Chat Flow
 1. JWT validated from `?token=` query param (not header — WebSocket limitation)
 2. Agent ownership verified via DB query
 3. If agent stopped → wake via orchestrator, send status messages to client
-4. Message loop: client sends JSON → forward to agent HTTP API → send response to client
-5. Update `agents.last_active` after each exchange
-6. Error responses return generic messages — internal details are never leaked to the client
+4. Chat handler uses `docker exec` + `openclaw agent --agent main --message "..." --json` CLI inside the agent container. This handles the OpenClaw gateway WebSocket protocol (device pairing, authentication) internally.
+5. Backend connects to Docker daemon via bollard, creates an exec session, and streams stdout for the response (130s timeout to prevent hanging)
+6. Status messages sent to client: "Agent waking up..." → "Agent ready" → "Thinking..." → response
+7. Update `agents.last_active` after each exchange
+8. Error responses return generic messages — internal details are never leaked to the client
 
 ## Extension
 - New endpoint: add handler in appropriate `routes/*.rs`, register in `routes()` or `create_router()`

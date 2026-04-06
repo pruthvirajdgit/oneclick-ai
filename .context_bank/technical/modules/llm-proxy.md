@@ -41,17 +41,24 @@ pub struct LlmProxy {
 ### Fallback Logic
 For each provider, for each model: try request. On 429 → warn + next. On error → error + next. On success → log usage + return. All failed → `AppError::Internal`.
 
+### Request Processing
+- `stream: false` is forced on all outgoing requests to ensure parseable JSON responses
+- `truncate_messages(messages, MAX_MESSAGE_CHARS)` truncates content to stay within Groq's 12K TPM limit (`MAX_MESSAGE_CHARS = 8000` chars). Uses `floor_char_boundary` for UTF-8 safe truncation.
+- Raw response body logged at `trace` level only (PII protection)
+
 ## Types (OpenAI-Compatible)
-- `ChatCompletionRequest` — model, messages, temperature, max_tokens, stream, extra (flatten)
+- `ChatCompletionRequest` — model, messages, temperature, max_tokens, stream. Extra fields (`extra`) are set to `None` before sending to providers to prevent payload pollution.
 - `ChatCompletionResponse` — id, object, created, model, choices, usage
-- `ChatMessage` — role, content
+- `ChatMessage` — role, content (`serde_json::Value` — handles both string and array format for multimodal content from OpenClaw)
 - `Choice` — index, message, finish_reason
 - `TokenUsage` — prompt_tokens, completion_tokens, total_tokens
 
 ## Provider Implementations
 Both `GroqProvider` and `OpenRouterProvider` use the shared `send_openai_request` helper. Only base_url and api_key differ.
 
+## SSE Conversion Layer
+When OpenClaw expects streaming (SSE format), the internal LLM endpoint in `internal.rs` converts the non-streaming JSON response into SSE events (`data: ...` chunks + `data: [DONE]`). This allows the proxy to always use `stream: false` upstream while satisfying clients that require SSE.
+
 ## Extension
 - New provider: add `ProviderConfig` entry in `LlmProxy::new()`
-- Streaming: implement SSE passthrough (not yet implemented — Phase 1 uses non-streaming)
 - Custom models: allow per-agent model override via request

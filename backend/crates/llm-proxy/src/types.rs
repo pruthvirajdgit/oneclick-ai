@@ -37,8 +37,9 @@ pub struct ChatMessage {
     /// The role of the message author (`system`, `user`, `assistant`).
     pub role: String,
 
-    /// The content of the message.
-    pub content: String,
+    /// The content of the message. May be a plain string or an array of
+    /// content parts (multimodal format used by some providers/agents).
+    pub content: serde_json::Value,
 }
 
 /// OpenAI-compatible chat completion response.

@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -19,7 +19,7 @@ use oneclick_shared::errors::{AppError, AppResult};
 use oneclick_shared::models::notification::CreateNotificationRequest;
 use oneclick_shared::models::schedule::{ScheduleResponse, ScheduledJob};
 
-use oneclick_llm_proxy::ChatCompletionRequest;
+use oneclick_llm_proxy::{ChatCompletionRequest, ChatCompletionResponse};
 
 use crate::middleware::rate_limit::{check_rate_limit, increment_rate_limit};
 use crate::state::AppState;
@@ -45,30 +45,55 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
 
-        // Validate shared secret to prevent external impersonation.
-        let secret = parts
+        // Try explicit headers first, then fall back to Authorization Bearer.
+        // Agent containers encode auth as "secret|agent_id|user_id" in the
+        // OPENROUTER_API_KEY which OpenClaw sends as Authorization: Bearer.
+        let secret_header = parts
             .headers
             .get("x-internal-secret")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+            .map(|s| s.to_string());
+
+        let (secret, agent_id, user_id) = if let Some(ref s) = secret_header {
+            // Explicit internal headers
+            let agent_id = parts
+                .headers
+                .get("x-agent-id")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| Uuid::parse_str(v).ok())
+                .ok_or_else(|| AppError::BadRequest("Missing or invalid X-Agent-Id header".into()))?;
+
+            let user_id = parts
+                .headers
+                .get("x-user-id")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| Uuid::parse_str(v).ok())
+                .ok_or_else(|| AppError::BadRequest("Missing or invalid X-User-Id header".into()))?;
+
+            (s.clone(), agent_id, user_id)
+        } else if let Some(bearer) = parts
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+        {
+            // Parse "secret|agent_id|user_id" from Bearer token
+            let parts_vec: Vec<&str> = bearer.splitn(3, '|').collect();
+            if parts_vec.len() != 3 {
+                return Err(AppError::Unauthorized);
+            }
+            let agent_id = Uuid::parse_str(parts_vec[1])
+                .map_err(|_| AppError::Unauthorized)?;
+            let user_id = Uuid::parse_str(parts_vec[2])
+                .map_err(|_| AppError::Unauthorized)?;
+            (parts_vec[0].to_string(), agent_id, user_id)
+        } else {
+            return Err(AppError::Unauthorized);
+        };
 
         if secret != app_state.config.internal_secret {
             return Err(AppError::Unauthorized);
         }
-
-        let agent_id = parts
-            .headers
-            .get("x-agent-id")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| Uuid::parse_str(v).ok())
-            .ok_or_else(|| AppError::BadRequest("Missing or invalid X-Agent-Id header".into()))?;
-
-        let user_id = parts
-            .headers
-            .get("x-user-id")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| Uuid::parse_str(v).ok())
-            .ok_or_else(|| AppError::BadRequest("Missing or invalid X-User-Id header".into()))?;
 
         // Validate that the agent belongs to the user.
         let (exists,): (bool,) = sqlx::query_as(
@@ -100,12 +125,76 @@ pub struct InternalCreateScheduleRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming helper
+// ---------------------------------------------------------------------------
+
+/// SSE-compatible streaming chunk, mirroring OpenAI's `chat.completion.chunk`.
+#[derive(Serialize)]
+struct StreamChunk {
+    id: String,
+    object: String,
+    created: i64,
+    model: String,
+    choices: Vec<StreamChoice>,
+    usage: Option<oneclick_llm_proxy::TokenUsage>,
+}
+
+#[derive(Serialize)]
+struct StreamChoice {
+    index: i32,
+    delta: Delta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Delta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+}
+
+/// Convert a non-streaming `ChatCompletionResponse` into a single SSE chunk.
+fn to_stream_chunk(resp: &ChatCompletionResponse) -> StreamChunk {
+    let choices = resp
+        .choices
+        .iter()
+        .map(|c| {
+            let content = match &c.message.content {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Null => None,
+                other => Some(other.to_string()),
+            };
+            StreamChoice {
+                index: c.index,
+                delta: Delta {
+                    role: Some(c.message.role.clone()),
+                    content,
+                },
+                finish_reason: c.finish_reason.clone(),
+            }
+        })
+        .collect();
+
+    StreamChunk {
+        id: resp.id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created: resp.created,
+        model: resp.model.clone(),
+        choices,
+        usage: resp.usage.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Endpoints
 // ---------------------------------------------------------------------------
 
 /// `POST /internal/llm/v1/chat/completions` — Proxy an LLM request from an agent.
 ///
 /// Checks the user's rate limit, then delegates to [`LlmProxy::chat_completion`].
+/// When the original request has `stream: true`, the non-streaming JSON response
+/// is wrapped in SSE format so OpenClaw can parse it.
 pub async fn llm_proxy(
     State(state): State<AppState>,
     internal: InternalAuth,
@@ -117,6 +206,8 @@ pub async fn llm_proxy(
         model = %request.model,
         "Internal LLM proxy request"
     );
+
+    let wants_stream = request.stream == Some(true);
 
     // Look up user tier for rate-limit check.
     let tier: (String,) = sqlx::query_as("SELECT tier FROM users WHERE id = $1")
@@ -155,7 +246,20 @@ pub async fn llm_proxy(
         let _ = increment_rate_limit(&state.redis, internal.user_id).await;
     }
 
-    Ok(Json(response))
+    if wants_stream {
+        // Convert the non-streaming response to SSE so OpenClaw can parse it.
+        let chunk = to_stream_chunk(&response);
+        let chunk_json = serde_json::to_string(&chunk).unwrap_or_default();
+        let sse_body = format!("data: {chunk_json}\n\ndata: [DONE]\n\n");
+
+        Ok(axum::response::Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(axum::body::Body::from(sse_body))
+            .unwrap()
+            .into_response())
+    } else {
+        Ok(Json(response).into_response())
+    }
 }
 
 /// `POST /internal/schedules` — Agent creates a schedule on behalf of its user.
