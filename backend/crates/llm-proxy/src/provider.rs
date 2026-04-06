@@ -8,7 +8,10 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
-use crate::types::{ChatCompletionRequest, ChatCompletionResponse};
+use crate::types::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
+
+// Re-export for use outside the crate (streaming endpoint).
+pub use futures_util::stream::BoxStream;
 
 // ---------------------------------------------------------------------------
 // ProviderError
@@ -174,4 +177,95 @@ pub(crate) async fn send_openai_request(
         .map_err(|e| ProviderError::InvalidResponse(format!("{e}: {}", &body[..body.floor_char_boundary(300)])))?;
 
     Ok(completion)
+}
+
+/// Send a streaming (SSE) chat completion request and return a stream of chunks.
+///
+/// The provider must support `stream: true`. The response is an SSE stream
+/// with lines in the format `data: {json}\n\n`, terminated by `data: [DONE]\n\n`.
+/// Each parsed chunk is yielded as a [`ChatCompletionChunk`].
+pub(crate) async fn send_openai_request_stream(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    request: &ChatCompletionRequest,
+) -> Result<BoxStream<'static, Result<ChatCompletionChunk, ProviderError>>, ProviderError> {
+    use futures_util::stream;
+
+    let url = format!("{}/chat/completions", base_url);
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(request)
+        .send()
+        .await?;
+
+    let status = response.status();
+
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let body = response.text().await.unwrap_or_default();
+        return Err(ProviderError::RateLimited(body));
+    }
+
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(ProviderError::ApiError {
+            status: status.as_u16(),
+            body,
+        });
+    }
+
+    // Stream the response bytes and parse SSE frames.
+    let byte_stream = response.bytes_stream();
+
+    let chunk_stream = stream::unfold(
+        (byte_stream, String::new()),
+        |(mut byte_stream, mut buffer)| async move {
+            loop {
+                // Try to extract a complete SSE event from the buffer.
+                if let Some(event_end) = buffer.find("\n\n") {
+                    let event = buffer[..event_end].to_string();
+                    buffer = buffer[event_end + 2..].to_string();
+
+                    for line in event.lines() {
+                        let line = line.trim();
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            let data = data.trim();
+                            if data == "[DONE]" {
+                                return None;
+                            }
+                            match serde_json::from_str::<ChatCompletionChunk>(data) {
+                                Ok(chunk) => return Some((Ok(chunk), (byte_stream, buffer))),
+                                Err(e) => {
+                                    tracing::debug!(
+                                        error = %e,
+                                        data = %data,
+                                        "Failed to parse SSE chunk, skipping"
+                                    );
+                                    // Skip unparseable chunks and continue
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Need more data from the network.
+                use futures_util::TryStreamExt;
+                match byte_stream.try_next().await {
+                    Ok(Some(bytes)) => {
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    Ok(None) => return None,
+                    Err(e) => {
+                        return Some((Err(ProviderError::Network(e)), (byte_stream, buffer)));
+                    }
+                }
+            }
+        },
+    );
+
+    Ok(Box::pin(chunk_stream))
 }
