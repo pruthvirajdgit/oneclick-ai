@@ -14,8 +14,8 @@ use fctools::{
         api::VmApi,
         configuration::{InitMethod, VmConfiguration, VmConfigurationData},
         models::{
-            BootSource, CreateSnapshot, Drive, LoadSnapshot,
-            MachineConfiguration, MemoryBackend, MemoryBackendType,
+            BootSource, CreateSnapshot, Drive,
+            MachineConfiguration,
             NetworkInterface, SnapshotType,
         },
         shutdown::{VmShutdownAction, VmShutdownMethod},
@@ -37,6 +37,7 @@ type FcVm = Vm<UnrestrictedVmmExecutor, SudoProcessSpawner, TokioRuntime>;
 const VM_IP: &str = "172.16.0.2";
 const KERNEL_PATH: &str = "resources/vmlinux-6.1";
 const SOCKET_PATH: &str = "/tmp/fc-poc.socket";
+const LOG_PATH: &str = "/tmp/fc-poc.log";
 const PID_FILE: &str = "/tmp/fc-poc.pid";
 const TAP_DEV: &str = "tap0";
 const GUEST_MAC: &str = "AA:FC:00:00:00:01";
@@ -147,7 +148,275 @@ enum Commands {
     },
 }
 
-// ─── fctools helpers ─────────────────────────────────────────────────────────
+// ─── Standalone VM management (for cross-process commands) ───────────────────
+// These functions spawn/manage the FC process directly and use raw HTTP for API
+// calls. Each HTTP call is a fresh connection — no persistent hyper client that
+// would block FC's API server after the CLI process exits.
+
+/// Serializable types for raw Firecracker API calls
+#[derive(Serialize)]
+struct RawBootSource {
+    kernel_image_path: String,
+    boot_args: String,
+}
+#[derive(Serialize)]
+struct RawDrive {
+    drive_id: String,
+    path_on_host: String,
+    is_root_device: bool,
+    is_read_only: bool,
+}
+#[derive(Serialize)]
+struct RawMachineConfig {
+    vcpu_count: u32,
+    mem_size_mib: usize,
+    track_dirty_pages: bool,
+}
+#[derive(Serialize)]
+struct RawNetworkInterface {
+    iface_id: String,
+    guest_mac: String,
+    host_dev_name: String,
+}
+#[derive(Serialize)]
+struct RawAction {
+    action_type: String,
+}
+#[derive(Serialize)]
+struct RawSnapshotLoad {
+    snapshot_path: String,
+    mem_backend: RawMemBackend,
+    enable_diff_snapshots: bool,
+    resume_vm: bool,
+}
+#[derive(Serialize)]
+struct RawMemBackend {
+    backend_type: String,
+    backend_path: String,
+}
+
+fn abs_path_str(relative: &str) -> String {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(relative)
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Send an HTTP request to the Firecracker API via Unix socket (fresh connection each time)
+async fn fc_request(
+    method: &str,
+    path: &str,
+    body: Option<String>,
+) -> Result<(u16, String)> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::Incoming;
+    use hyper::Request;
+    use hyper_util::rt::TokioIo;
+    use tokio::net::UnixStream;
+
+    let stream = UnixStream::connect(SOCKET_PATH)
+        .await
+        .context("Failed to connect to Firecracker socket")?;
+    let io = TokioIo::new(stream);
+
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .context("HTTP handshake failed")?;
+
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("Connection error: {}", e);
+        }
+    });
+
+    let body_bytes = body.unwrap_or_default();
+    let req = Request::builder()
+        .method(method)
+        .uri(format!("http://localhost{}", path))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .body(Full::new(Bytes::from(body_bytes)))
+        .context("Failed to build request")?;
+
+    let resp: hyper::Response<Incoming> = sender
+        .send_request(req)
+        .await
+        .context("Failed to send request")?;
+
+    let status = resp.status().as_u16();
+    let body = resp.into_body().collect().await
+        .context("Failed to read response body")?
+        .to_bytes();
+    Ok((status, String::from_utf8_lossy(&body).to_string()))
+}
+
+/// Start a new Firecracker process directly (not via fctools)
+async fn start_firecracker_process() -> Result<u32> {
+    let _ = tokio::fs::remove_file(SOCKET_PATH).await;
+    tokio::fs::write(LOG_PATH, "").await?;
+
+    let child = Command::new("sudo")
+        .arg("firecracker")
+        .arg("--api-sock")
+        .arg(SOCKET_PATH)
+        .arg("--log-path")
+        .arg(LOG_PATH)
+        .arg("--level")
+        .arg("Info")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to start firecracker process")?;
+
+    let pid = child.id().unwrap_or(0);
+
+    for _ in 0..50 {
+        if std::path::Path::new(SOCKET_PATH).exists() {
+            let _ = Command::new("sudo")
+                .args(["chmod", "666", SOCKET_PATH])
+                .output()
+                .await;
+            tokio::fs::write(PID_FILE, pid.to_string()).await?;
+            return Ok(pid);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("Firecracker socket did not appear after 5s");
+}
+
+/// Configure VM via raw Firecracker API calls
+async fn configure_vm(cfg: &ProfileConfig) -> Result<()> {
+    let boot = RawBootSource {
+        kernel_image_path: abs_path_str(KERNEL_PATH),
+        boot_args: BOOT_ARGS.into(),
+    };
+    let (status, body) = fc_request("PUT", "/boot-source", Some(serde_json::to_string(&boot)?)).await?;
+    if status != 204 { bail!("boot-source failed: {} {}", status, body); }
+
+    let drive = RawDrive {
+        drive_id: "rootfs".into(),
+        path_on_host: abs_path_str(cfg.rootfs),
+        is_root_device: true,
+        is_read_only: false,
+    };
+    let (status, body) = fc_request("PUT", "/drives/rootfs", Some(serde_json::to_string(&drive)?)).await?;
+    if status != 204 { bail!("drives failed: {} {}", status, body); }
+
+    let config = RawMachineConfig {
+        vcpu_count: 2,
+        mem_size_mib: cfg.mem_mib,
+        track_dirty_pages: true,
+    };
+    let (status, body) = fc_request("PUT", "/machine-config", Some(serde_json::to_string(&config)?)).await?;
+    if status != 204 { bail!("machine-config failed: {} {}", status, body); }
+
+    let net = RawNetworkInterface {
+        iface_id: "eth0".into(),
+        guest_mac: GUEST_MAC.into(),
+        host_dev_name: TAP_DEV.into(),
+    };
+    let (status, body) = fc_request("PUT", "/network-interfaces/eth0", Some(serde_json::to_string(&net)?)).await?;
+    if status != 204 { bail!("network-interfaces failed: {} {}", status, body); }
+
+    Ok(())
+}
+
+/// Send InstanceStart action via raw API
+async fn instance_start() -> Result<()> {
+    let action = RawAction { action_type: "InstanceStart".into() };
+    let (status, body) = fc_request("PUT", "/actions", Some(serde_json::to_string(&action)?)).await?;
+    if status != 204 { bail!("InstanceStart failed: {} {}", status, body); }
+    Ok(())
+}
+
+/// Kill the Firecracker process by PID
+async fn kill_firecracker() -> Result<()> {
+    if let Ok(pid_str) = tokio::fs::read_to_string(PID_FILE).await {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            let _ = Command::new("sudo")
+                .arg("sh")
+                .arg("-c")
+                .arg(format!("kill {} 2>/dev/null; sleep 1; kill -9 {} 2>/dev/null", pid, pid))
+                .output()
+                .await;
+            let _ = Command::new("sudo")
+                .arg("sh")
+                .arg("-c")
+                .arg("kill -9 $(pgrep -f 'firecracker --api-sock /tmp/fc-poc') 2>/dev/null")
+                .output()
+                .await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    let _ = tokio::fs::remove_file(PID_FILE).await;
+    let _ = tokio::fs::remove_file(SOCKET_PATH).await;
+    Ok(())
+}
+
+/// Standalone snapshot sleep: pause → snapshot → kill (raw HTTP, cross-process safe)
+async fn standalone_snapshot_sleep(snapshot_dir: &str) -> Result<()> {
+    let snap_state = format!("{}/vm.snap", snapshot_dir);
+    let snap_mem = format!("{}/vm.mem", snapshot_dir);
+    tokio::fs::create_dir_all(snapshot_dir).await?;
+
+    let (status, body) = fc_request("PATCH", "/vm", Some(r#"{"state": "Paused"}"#.into())).await?;
+    if status != 204 { bail!("Pause failed: {} {}", status, body); }
+    println!("  VM paused");
+
+    let snap_body = serde_json::json!({
+        "snapshot_type": "Full",
+        "snapshot_path": abs_path_str(&snap_state),
+        "mem_file_path": abs_path_str(&snap_mem),
+    });
+    let (status, body) = fc_request("PUT", "/snapshot/create", Some(snap_body.to_string())).await?;
+    if status != 204 { bail!("CreateSnapshot failed: {} {}", status, body); }
+    println!("  Snapshot saved to {}", snapshot_dir);
+
+    kill_firecracker().await?;
+    println!("  Firecracker process killed");
+    Ok(())
+}
+
+/// Standalone snapshot wake: new FC process → load snapshot → resume (raw HTTP)
+async fn standalone_snapshot_wake(snapshot_dir: &str) -> Result<Duration> {
+    let snap_state = format!("{}/vm.snap", snapshot_dir);
+    let snap_mem = format!("{}/vm.mem", snapshot_dir);
+    let start = Instant::now();
+
+    // Clean up stale socket before starting new FC process
+    let _ = Command::new("sudo").args(["rm", "-f", SOCKET_PATH]).output().await;
+
+    let pid = start_firecracker_process().await?;
+    println!("  New Firecracker process: PID {}", pid);
+
+    // Wait for the FC API socket to become ready
+    for i in 0..50 {
+        if tokio::net::UnixStream::connect(SOCKET_PATH).await.is_ok() {
+            break;
+        }
+        if i == 49 { bail!("Firecracker socket not ready after 5s"); }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let load = RawSnapshotLoad {
+        snapshot_path: abs_path_str(&snap_state),
+        mem_backend: RawMemBackend {
+            backend_type: "File".into(),
+            backend_path: abs_path_str(&snap_mem),
+        },
+        enable_diff_snapshots: false,
+        resume_vm: true,
+    };
+    let (status, body) = fc_request("PUT", "/snapshot/load", Some(serde_json::to_string(&load)?)).await?;
+    if status != 204 { bail!("LoadSnapshot failed: {} {}", status, body); }
+
+    Ok(start.elapsed())
+}
+
+// ─── fctools helpers (for in-process lifecycle/stress commands) ───────────────
 
 fn abs_path(relative: &str) -> PathBuf {
     std::env::current_dir()
@@ -169,7 +438,7 @@ fn fc_executor() -> UnrestrictedVmmExecutor {
 }
 
 fn fc_resource_system() -> ResourceSystem<SudoProcessSpawner, TokioRuntime> {
-    ResourceSystem::new(fc_spawner(), TokioRuntime, VmmOwnershipModel::Shared)
+    ResourceSystem::new(fc_spawner(), TokioRuntime, VmmOwnershipModel::UpgradedPermanently)
 }
 
 /// Build the VmConfigurationData for a new or restored VM
@@ -245,11 +514,28 @@ async fn create_and_start_vm(cfg: &ProfileConfig) -> Result<FcVm> {
         .await
         .map_err(|e| anyhow::anyhow!("Vm::prepare failed: {:?}", e))?;
 
+    // Spawn background task to chmod the socket as soon as FC creates it.
+    // fctools' socket wait loop connects as non-root, but FC (via sudo) creates
+    // a root-owned socket. We fix permissions so the wait loop succeeds.
+    let socket_chmod_handle = tokio::spawn(async {
+        for _ in 0..100 {
+            if std::path::Path::new(SOCKET_PATH).exists() {
+                let _ = Command::new("sudo")
+                    .args(["chmod", "666", SOCKET_PATH])
+                    .output()
+                    .await;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+
     println!("  Starting VM via fctools...");
     vm.start(Duration::from_secs(30))
         .await
         .map_err(|e| anyhow::anyhow!("Vm::start failed: {:?}", e))?;
 
+    socket_chmod_handle.abort(); // cleanup if still running
     println!("  VM started (fctools managed)");
     Ok(vm)
 }
@@ -309,8 +595,8 @@ async fn snapshot_wake_fctools(
         process_spawner: fc_spawner(),
         runtime: TokioRuntime,
         moved_resource_type: MovedResourceType::HardLinkedOrCopied,
-        ownership_model: VmmOwnershipModel::Shared,
-        track_dirty_pages: Some(true),
+        ownership_model: VmmOwnershipModel::UpgradedPermanently,
+        track_dirty_pages: None,
         resume_vm: Some(true),
         network_overrides: vec![],
     };
@@ -320,10 +606,25 @@ async fn snapshot_wake_fctools(
         .await
         .map_err(|e| anyhow::anyhow!("prepare_vm failed: {:?}", e))?;
 
+    // chmod socket for non-root access
+    let socket_chmod_handle = tokio::spawn(async {
+        for _ in 0..100 {
+            if std::path::Path::new(SOCKET_PATH).exists() {
+                let _ = Command::new("sudo")
+                    .args(["chmod", "666", SOCKET_PATH])
+                    .output()
+                    .await;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+
     new_vm.start(Duration::from_secs(10))
         .await
         .map_err(|e| anyhow::anyhow!("Vm::start (restore) failed: {:?}", e))?;
 
+    socket_chmod_handle.abort();
     let restore_time = start.elapsed();
     println!("  Snapshot restored in {:.0}ms (fctools)", restore_time.as_millis());
 
@@ -350,166 +651,6 @@ async fn shutdown_vm(vm: &mut FcVm) -> Result<()> {
     println!("  VM shut down (fctools)");
     let _ = tokio::fs::remove_file(SOCKET_PATH).await;
     Ok(())
-}
-
-// ─── Standalone command helpers (for cross-process stop/wake) ────────────────
-
-/// Minimal HTTP over Unix socket — only used by standalone `stop` command.
-/// In production, the Vm struct lives in the backend process, so this isn't needed.
-async fn fc_request(
-    method: &str,
-    path: &str,
-    body: Option<String>,
-) -> Result<(u16, String)> {
-    use bytes::Bytes;
-    use http_body_util::{BodyExt, Full};
-    use hyper::body::Incoming;
-    use hyper::Request;
-    use hyper_util::rt::TokioIo;
-    use tokio::net::UnixStream;
-
-    let stream = UnixStream::connect(SOCKET_PATH)
-        .await
-        .context("Failed to connect to Firecracker socket")?;
-    let io = TokioIo::new(stream);
-
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .context("HTTP handshake failed")?;
-
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            eprintln!("Connection error: {}", e);
-        }
-    });
-
-    let body_bytes = body.unwrap_or_default();
-    let req = Request::builder()
-        .method(method)
-        .uri(format!("http://localhost{}", path))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
-        .body(Full::new(Bytes::from(body_bytes)))
-        .context("Failed to build request")?;
-
-    let resp: hyper::Response<Incoming> = sender
-        .send_request(req)
-        .await
-        .context("Failed to send request")?;
-
-    let status = resp.status().as_u16();
-    let body = resp.into_body().collect().await
-        .context("Failed to read response body")?
-        .to_bytes();
-    Ok((status, String::from_utf8_lossy(&body).to_string()))
-}
-
-/// Kill the Firecracker process by PID
-async fn kill_firecracker() -> Result<()> {
-    if let Ok(pid_str) = tokio::fs::read_to_string(PID_FILE).await {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            let _ = Command::new("sudo")
-                .arg("sh")
-                .arg("-c")
-                .arg(format!("kill {} 2>/dev/null; sleep 1; kill -9 {} 2>/dev/null", pid, pid))
-                .output()
-                .await;
-            // Also kill any stray firecracker processes for our socket
-            let _ = Command::new("sudo")
-                .arg("sh")
-                .arg("-c")
-                .arg("pkill -f 'firecracker --api-sock /tmp/fc-poc' 2>/dev/null")
-                .output()
-                .await;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    }
-    let _ = tokio::fs::remove_file(PID_FILE).await;
-    let _ = tokio::fs::remove_file(SOCKET_PATH).await;
-    Ok(())
-}
-
-/// Standalone stop: talks to existing VM via HTTP (cross-process fallback)
-async fn standalone_snapshot_sleep(snapshot_dir: &str) -> Result<()> {
-    let snap_state = format!("{}/vm.snap", snapshot_dir);
-    let snap_mem = format!("{}/vm.mem", snapshot_dir);
-    tokio::fs::create_dir_all(snapshot_dir).await?;
-
-    // Pause
-    let (status, body) = fc_request("PATCH", "/vm", Some(r#"{"state": "Paused"}"#.into())).await?;
-    if status != 204 { bail!("Pause failed: {} {}", status, body); }
-    println!("  VM paused");
-
-    // Snapshot
-    let snap_body = serde_json::json!({
-        "snapshot_type": "Full",
-        "snapshot_path": abs_path(&snap_state),
-        "mem_file_path": abs_path(&snap_mem),
-    });
-    let (status, body) = fc_request("PUT", "/snapshot/create", Some(snap_body.to_string())).await?;
-    if status != 204 { bail!("CreateSnapshot failed: {} {}", status, body); }
-    println!("  Snapshot saved to {}", snapshot_dir);
-
-    kill_firecracker().await?;
-    println!("  Firecracker process killed");
-    Ok(())
-}
-
-/// Standalone wake: uses fctools VmConfiguration::RestoredFromSnapshot
-async fn standalone_snapshot_wake(cfg: &ProfileConfig) -> Result<Duration> {
-    let snap_state = format!("{}/vm.snap", cfg.snapshot_dir);
-    let snap_mem = format!("{}/vm.mem", cfg.snapshot_dir);
-    let start = Instant::now();
-
-    let _ = tokio::fs::remove_file(SOCKET_PATH).await;
-
-    let mut resource_system = fc_resource_system();
-    let data = build_vm_config(cfg, &mut resource_system)?;
-
-    // Create resources for snapshot files
-    let snap_resource = resource_system
-        .create_resource(abs_path(&snap_state), ResourceType::Moved(MovedResourceType::HardLinkedOrCopied))
-        .map_err(|e| anyhow::anyhow!("Failed to create snap resource: {:?}", e))?;
-    let mem_resource = resource_system
-        .create_resource(abs_path(&snap_mem), ResourceType::Moved(MovedResourceType::HardLinkedOrCopied))
-        .map_err(|e| anyhow::anyhow!("Failed to create mem resource: {:?}", e))?;
-
-    let load_snapshot = LoadSnapshot {
-        track_dirty_pages: Some(true),
-        mem_backend: MemoryBackend {
-            backend_type: MemoryBackendType::File,
-            backend: mem_resource,
-        },
-        snapshot: snap_resource,
-        resume_vm: Some(true),
-        network_overrides: vec![],
-    };
-
-    let configuration = VmConfiguration::RestoredFromSnapshot {
-        load_snapshot,
-        data,
-    };
-
-    let mut vm = Vm::prepare(fc_executor(), resource_system, fc_installation(), configuration)
-        .await
-        .map_err(|e| anyhow::anyhow!("Vm::prepare (restore) failed: {:?}", e))?;
-
-    vm.start(Duration::from_secs(10))
-        .await
-        .map_err(|e| anyhow::anyhow!("Vm::start (restore) failed: {:?}", e))?;
-
-    let restore_time = start.elapsed();
-
-    // Save PID for later commands
-    // Note: fctools manages the process internally, but we save state for destroy
-    save_state(&VmState {
-        pid: 0, // fctools manages PID
-        socket_path: SOCKET_PATH.into(),
-        snapshot_dir: cfg.snapshot_dir.into(),
-        snapshot_exists: true,
-    }).await?;
-
-    Ok(restore_time)
 }
 
 // ─── Health check (TCP, no FC API needed) ────────────────────────────────────
@@ -562,27 +703,29 @@ async fn save_state(state: &VmState) -> Result<()> {
 
 // ─── CLI Commands ────────────────────────────────────────────────────────────
 
-/// Create + start VM using fctools
+/// Create + start VM using standalone process management (cross-process safe)
 async fn cmd_create_start(cfg: &ProfileConfig) -> Result<()> {
-    println!("Creating and starting VM via fctools...");
+    println!("Creating and starting VM...");
     let start = Instant::now();
 
-    let _vm = create_and_start_vm(cfg).await?;
+    // Clean up stale socket
+    let _ = Command::new("sudo").args(["rm", "-f", SOCKET_PATH]).output().await;
+
+    let pid = start_firecracker_process().await?;
+    println!("  Firecracker process started: PID {}", pid);
+
+    configure_vm(cfg).await?;
+    println!("  VM configured (kernel={}, rootfs={}, mem={}MB)", KERNEL_PATH, cfg.rootfs, cfg.mem_mib);
+
+    instance_start().await?;
+    println!("  InstanceStart sent ({:.0}ms)", start.elapsed().as_millis());
 
     println!("  Waiting for health check on port {}{}...", cfg.health_port, cfg.health_path);
     if wait_for_health(cfg.boot_timeout, cfg.health_port, cfg.health_path).await? {
-        println!("VM started and healthy ({:.1}s total, fctools)", start.elapsed().as_secs_f64());
+        println!("VM started and healthy ({:.1}s total)", start.elapsed().as_secs_f64());
     } else {
         bail!("VM started but health check failed after {}s", cfg.boot_timeout);
     }
-
-    // Save state — VM process is detached (runs after Vm struct is dropped)
-    save_state(&VmState {
-        pid: 0,
-        socket_path: SOCKET_PATH.into(),
-        snapshot_dir: cfg.snapshot_dir.into(),
-        snapshot_exists: false,
-    }).await?;
 
     Ok(())
 }
@@ -613,11 +756,11 @@ async fn cmd_stop(cfg: &ProfileConfig) -> Result<()> {
     Ok(())
 }
 
-/// Wake: uses fctools VmConfiguration::RestoredFromSnapshot
+/// Wake: standalone snapshot restore (raw HTTP, cross-process safe)
 async fn cmd_wake(cfg: &ProfileConfig) -> Result<()> {
-    println!("Waking VM (snapshot restore via fctools)...");
-    let restore_time = standalone_snapshot_wake(cfg).await?;
-    println!("  Snapshot restored in {:.0}ms (fctools)", restore_time.as_millis());
+    println!("Waking VM (snapshot restore)...");
+    let restore_time = standalone_snapshot_wake(cfg.snapshot_dir).await?;
+    println!("  Snapshot restored in {:.0}ms", restore_time.as_millis());
 
     println!("  Waiting for health check...");
     let start = Instant::now();
@@ -666,11 +809,13 @@ async fn cmd_lifecycle(cfg: &ProfileConfig) -> Result<()> {
         bail!("Health check failed");
     }
 
-    // Step 3: Snapshot sleep (pause → snapshot)
+    // Step 3: Snapshot sleep (pause → snapshot → shutdown old VM to release TAP)
     println!("\n--- Step 3: Snapshot sleep ---");
     let snapshot = snapshot_sleep_fctools(&mut vm, cfg).await?;
+    shutdown_vm(&mut vm).await?;
+    println!("  Old VM shutdown, TAP released");
 
-    // Step 4: Snapshot wake (restore via prepare_vm, which reuses resources from old vm)
+    // Step 4: Snapshot wake (restore via prepare_vm)
     println!("\n--- Step 4: Snapshot wake ---");
     let (mut new_vm, restore_time) = snapshot_wake_fctools(snapshot, &mut vm, cfg).await?;
 
@@ -718,9 +863,9 @@ async fn cmd_stress(cfg: &ProfileConfig) -> Result<()> {
         // Snapshot sleep
         println!("  Stopping (snapshot via fctools)...");
         let snapshot = snapshot_sleep_fctools(&mut vm, cfg).await?;
+        shutdown_vm(&mut vm).await?;
 
-        // Shutdown old VM, then restore
-        // prepare_vm takes &mut old_vm to move resources from old to new VM
+        // Restore from snapshot
         println!("  Waking (restore via fctools)...");
         let (new_vm, restore_time) = snapshot_wake_fctools(snapshot, &mut vm, cfg).await?;
         vm = new_vm;
