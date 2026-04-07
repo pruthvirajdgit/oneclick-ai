@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 // =============================================================================
-// OneClick.ai - Device Auto-Pairing Script
+// OneClick.ai - Device Auto-Pairing Daemon
 // =============================================================================
-// Polls the OpenClaw gateway for pending device-pairing requests and
-// auto-approves them so the backend can immediately use CLI write access.
-// Runs as a background process launched by entrypoint.sh.
+// Runs as a persistent background process inside the agent container.
+// Continuously polls the OpenClaw gateway for pending device-pairing requests
+// and auto-approves them so that both the chat-bridge and browser sessions
+// connect without manual intervention.
 // =============================================================================
 
 const http = require("http");
-const fs = require("fs");
 
 const GW_PORT = process.env.AGENT_PORT || 3000;
 const GW_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || "oneclick-local-dev";
-const MARKER = "/home/node/.openclaw/device-paired";
-const MAX_ATTEMPTS = 40;
 const POLL_INTERVAL = 3000;
+const GATEWAY_WAIT_INTERVAL = 5000;
 
 function request(method, urlPath, body) {
   return new Promise((resolve, reject) => {
@@ -46,19 +45,19 @@ function request(method, urlPath, body) {
 }
 
 async function waitForGateway() {
-  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+  while (true) {
     try {
       const res = await request("GET", "/");
-      if (res.status === 200) return true;
+      if (res.status === 200) return;
     } catch (e) {}
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    await new Promise((r) => setTimeout(r, GATEWAY_WAIT_INTERVAL));
   }
-  return false;
 }
 
 async function approvePendingDevices() {
   try {
     const res = await request("GET", "/api/devices");
+    if (!Array.isArray(res.body)) return;
     const pending = res.body.filter(
       (d) => d.status === "pending" || d.state === "pending"
     );
@@ -67,38 +66,23 @@ async function approvePendingDevices() {
       console.log("[pair-device] Approving device " + id);
       await request("POST", "/api/devices/" + id + "/approve", {});
     }
-    return pending.length > 0;
   } catch (e) {
-    return false;
+    // Gateway may have restarted — will retry next tick
   }
 }
 
 async function main() {
-  if (fs.existsSync(MARKER)) {
-    console.log("[pair-device] Already paired, exiting.");
-    return;
-  }
-
   console.log("[pair-device] Waiting for gateway...");
-  const ready = await waitForGateway();
-  if (!ready) {
-    console.log("[pair-device] Gateway not ready after timeout, exiting.");
-    return;
-  }
-  console.log("[pair-device] Gateway ready, polling for devices...");
+  await waitForGateway();
+  console.log("[pair-device] Gateway ready — watching for new devices...");
 
-  for (let i = 0; i < 10; i++) {
-    const approved = await approvePendingDevices();
-    if (approved) {
-      fs.writeFileSync(MARKER, new Date().toISOString());
-      return;
-    }
+  while (true) {
+    await approvePendingDevices();
     await new Promise((r) => setTimeout(r, POLL_INTERVAL));
   }
-  console.log("[pair-device] No pending devices found. Done.");
 }
 
 main().catch((err) => {
-  console.error("[pair-device] Error:", err.message);
-  process.exit(0);
+  console.error("[pair-device] Fatal:", err.message);
+  process.exit(1);
 });
