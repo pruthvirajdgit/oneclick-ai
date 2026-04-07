@@ -265,6 +265,16 @@ impl Orchestrator {
         }
     }
 
+    /// Get the host port mapped to port 3000 for the given agent's container.
+    pub async fn get_host_port(&self, agent_id: Uuid) -> AppResult<Option<u16>> {
+        let agent = self.get_agent(agent_id).await?;
+        let container_id = agent
+            .container_id
+            .as_deref()
+            .ok_or_else(|| AppError::Internal("Agent has no container ID".into()))?;
+        self.runtime.get_host_port(container_id).await
+    }
+
     /// Remove lock entries for agents that no longer exist in the DB.
     ///
     /// Call periodically (e.g., from the idle-monitor sweep) to bound

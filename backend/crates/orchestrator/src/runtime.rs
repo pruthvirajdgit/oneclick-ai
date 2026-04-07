@@ -12,7 +12,7 @@ use bollard::container::{
 };
 use bollard::container::NetworkingConfig;
 use bollard::models::{
-    EndpointSettings, HostConfig, RestartPolicy, RestartPolicyNameEnum,
+    EndpointSettings, HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::Docker;
 use oneclick_shared::config::Config;
@@ -43,6 +43,9 @@ pub trait AgentRuntime: Send + Sync {
     ///
     /// Returns `true` if the agent responded successfully, `false` otherwise.
     async fn health_check(&self, container_id: &str) -> AppResult<bool>;
+
+    /// Get the host port mapped to container port 3000 (OpenClaw UI).
+    async fn get_host_port(&self, container_id: &str) -> AppResult<Option<u16>>;
 }
 
 /// Docker-based agent runtime using the bollard client.
@@ -167,6 +170,17 @@ impl AgentRuntime for DockerRuntime {
             },
         );
 
+        // Publish container port 3000 (OpenClaw gateway UI) on a random host port
+        // so the browser can connect directly with full WebSocket support.
+        let mut port_bindings = HashMap::new();
+        port_bindings.insert(
+            "3000/tcp".to_string(),
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_string()),
+                host_port: Some("0".to_string()), // 0 = random available port
+            }]),
+        );
+
         let host_config = HostConfig {
             memory: Some(memory),
             nano_cpus: Some(nano_cpus),
@@ -178,8 +192,13 @@ impl AgentRuntime for DockerRuntime {
             binds: Some(vec![
                 format!("oneclick-agent-{name}:/home/node/.openclaw"),
             ]),
+            port_bindings: Some(port_bindings),
             ..Default::default()
         };
+
+        // Expose port 3000 in the container config
+        let mut exposed_ports = HashMap::new();
+        exposed_ports.insert("3000/tcp".to_string(), HashMap::new());
 
         let container_config = ContainerConfig {
             image: Some(config.agent_image.clone()),
@@ -189,6 +208,7 @@ impl AgentRuntime for DockerRuntime {
             networking_config: Some(NetworkingConfig {
                 endpoints_config: endpoints,
             }),
+            exposed_ports: Some(exposed_ports),
             // OpenClaw requires a TTY to run the gateway process
             tty: Some(true),
             ..Default::default()
@@ -342,6 +362,28 @@ impl AgentRuntime for DockerRuntime {
              Define a HEALTHCHECK in the agent Dockerfile for reliable readiness detection."
         );
         Ok(true)
+    }
+
+    async fn get_host_port(&self, container_id: &str) -> AppResult<Option<u16>> {
+        let inspect = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!("Container inspect failed: {e}"))
+            })?;
+
+        let port = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.ports.as_ref())
+            .and_then(|ports| ports.get("3000/tcp"))
+            .and_then(|bindings| bindings.as_ref())
+            .and_then(|bindings| bindings.first())
+            .and_then(|b| b.host_port.as_ref())
+            .and_then(|p| p.parse::<u16>().ok());
+
+        Ok(port)
     }
 }
 

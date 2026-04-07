@@ -53,14 +53,15 @@ pub struct AgentResponse {
 
 impl From<Agent> for AgentResponse {
     fn from(a: Agent) -> Self {
-        let chat_url = Some(format!("/agent-ui/{}", a.id));
+        // chat_url is populated by the wake endpoint after the agent is running.
+        // The list/get endpoints return None — frontend calls wake to get the URL.
         Self {
             id: a.id,
             status: a.status,
             model: a.model,
             last_active: a.last_active,
             created_at: a.created_at,
-            chat_url,
+            chat_url: None,
         }
     }
 }

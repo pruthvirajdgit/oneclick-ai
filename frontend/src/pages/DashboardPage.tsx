@@ -134,12 +134,6 @@ export default function DashboardPage() {
 
   // ── Wake agent & open OpenClaw UI in new tab ──────────────
   async function handleChat(agent: Agent) {
-    // If already running and we have the URL, open directly
-    if (agent.status === "running" && agent.chat_url) {
-      window.open(agent.chat_url, "_blank", "noopener");
-      return;
-    }
-
     setWakingId(agent.id);
     try {
       const result = await api.post<{ status: string; chat_url: string }>(

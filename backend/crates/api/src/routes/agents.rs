@@ -130,7 +130,14 @@ async fn wake_agent(
     // Blocks until healthy or returns error after retries exhausted.
     let agent = state.orchestrator.ensure_ready(agent.id).await?;
 
-    let chat_url = format!("/agent-ui/{id}");
+    // Get the dynamically assigned host port for the OpenClaw UI
+    let host_port = state
+        .orchestrator
+        .get_host_port(agent.id)
+        .await?
+        .ok_or_else(|| AppError::Internal("No host port mapped for agent".into()))?;
+
+    let chat_url = format!("http://localhost:{host_port}");
     tracing::info!(agent_id = %id, %chat_url, "Agent woken — chat URL ready");
 
     Ok(Json(WakeResponse {
