@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import {
@@ -73,7 +74,7 @@ export default function DashboardPage() {
   const [model, setModel] = useState("groq/llama-3.3-70b-versatile");
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [wakingId, setWakingId] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   // ── Fetch agents ───────────────────────────────────────────
   const fetchAgents = useCallback(async (showLoading = false) => {
@@ -132,23 +133,9 @@ export default function DashboardPage() {
     }
   }
 
-  // ── Wake agent & open OpenClaw UI in new tab ──────────────
-  async function handleChat(agent: Agent) {
-    setWakingId(agent.id);
-    try {
-      const result = await api.post<{ status: string; chat_url: string }>(
-        `/agents/${agent.id}/wake`,
-        {}
-      );
-      window.open(result.chat_url, "_blank", "noopener");
-      await fetchAgents(false);
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to wake agent"
-      );
-    } finally {
-      setWakingId(null);
-    }
+  // ── Open in-app chat page ───────────────────────────────────
+  function handleChat(agent: Agent) {
+    navigate(`/chat/${agent.id}`);
   }
 
   // ── Loading skeleton ───────────────────────────────────────
@@ -263,19 +250,9 @@ export default function DashboardPage() {
                     size="sm"
                     className="flex-1 bg-indigo-600 text-white hover:bg-indigo-700"
                     onClick={() => handleChat(agent)}
-                    disabled={wakingId === agent.id}
                   >
-                    {wakingId === agent.id ? (
-                      <>
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        Waking…
-                      </>
-                    ) : (
-                      <>
-                        <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
-                        Chat
-                      </>
-                    )}
+                    <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                    Chat
                   </Button>
                   <Button
                     size="sm"
