@@ -10,17 +10,17 @@ Machine-readable project context for AI agents. Two sections:
 ├── product/
 │   ├── vision.md                      # What we're building, for whom, and why
 │   ├── decisions.md                   # Product decisions with rationale
-│   └── roadmap.md                     # Phased delivery plan
+│   └── roadmap.md                     # Phased delivery plan (Phase 0-3)
 └── technical/
     ├── architecture.md                # System design, data flows, crate map
     ├── decisions.md                   # Technical ADRs (condensed)
     ├── guidelines.md                  # Coding standards, Rust idiomatics, PR rules
-    ├── infrastructure.md              # Docker, Postgres, Redis, networking
+    ├── infrastructure.md              # Docker, Postgres, Redis, networking, agent containers
     └── modules/
         ├── shared.md                  # Foundation crate
-        ├── api.md                     # HTTP/WS routes, middleware
+        ├── api.md                     # HTTP/WS routes, middleware, SSE bridge
         ├── orchestrator.md            # Agent lifecycle, DockerRuntime
-        ├── llm-proxy.md               # Multi-provider LLM routing
+        ├── llm-proxy.md               # Multi-provider LLM routing with SSE streaming
         ├── scheduler.md               # Cron runner
         ├── monitor.md                 # Idle detection
         ├── notifications.md           # Alerts + broadcast
@@ -28,6 +28,15 @@ Machine-readable project context for AI agents. Two sections:
         ├── agent-tools.md             # OpenClaw JS plugin
         └── webhook-receiver.md        # Inbound integrations (stub)
 ```
+
+## Current State (as of Phase 2 completion)
+
+- **Backend**: Rust monolith (10 crates) on port 8080
+- **Frontend**: React 19 + Vite + Tailwind + shadcn/ui, served by nginx on port 80/3000
+- **Chat**: In-app WebSocket → SSE bridge pipeline with real-time token streaming
+- **Agent Runtime**: Custom OpenClaw image with chat-bridge.js (port 3001) and pair-device.js
+- **Infrastructure**: Docker Compose (frontend + backend + postgres + redis). No Traefik.
+- **Next**: Phase 3 — Firecracker microVMs for <200ms wake times
 
 ## Usage
 

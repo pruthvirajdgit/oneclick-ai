@@ -18,6 +18,9 @@ cd oneclick-ai
 cp .env.example .env
 # Edit .env — add GROQ_API_KEY, OPENROUTER_API_KEY
 
+# Build agent image
+docker build -t oneclick-agent:latest agent-runtime/
+
 # Build and start
 docker compose up -d --build
 
@@ -29,6 +32,7 @@ docker compose logs -f backend
 ```
 
 ### Access
+- Frontend: http://localhost:3000
 - Swagger UI: http://localhost:8080/swagger-ui/
 - Backend API: http://localhost:8080/api/
 - PostgreSQL: localhost:5432 (user: oneclick, db: oneclick)
@@ -38,6 +42,12 @@ docker compose logs -f backend
 ```bash
 # Rebuild backend after code changes
 docker compose up -d --build backend
+
+# Rebuild frontend after code changes
+docker compose up -d --build frontend
+
+# Build agent image after changes to agent-runtime/
+docker build -t oneclick-agent:latest agent-runtime/
 
 # Run database migrations
 docker compose exec backend ./oneclick-backend migrate
@@ -115,17 +125,11 @@ IDLE_TIMEOUT_MINUTES=15
 
 ```yaml
 services:
-  traefik:
-    command:
-      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/certs/acme.json"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+  frontend:
+    restart: always
 
   backend:
     restart: always
-    labels:
-      - "traefik.http.routers.api.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
 
   postgres:
     restart: always
@@ -133,6 +137,8 @@ services:
   redis:
     restart: always
 ```
+
+> Note: Traefik was removed in Phase 2. For production TLS, add a reverse proxy (Caddy, nginx, or cloud load balancer) in front of the frontend container.
 
 ### Backups
 

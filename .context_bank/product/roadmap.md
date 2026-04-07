@@ -4,7 +4,7 @@
 **Goal:** Prove OpenClaw runs in Docker with free LLM models.
 **Delivered:** Single-user OpenClaw agent in Docker, connected to OpenRouter (Nemotron 9B free), accessible via built-in dashboard. Ran for 2+ weeks unattended.
 
-## Phase 1 — Backend Engine ✅ (Current)
+## Phase 1 — Backend Engine ✅
 **Goal:** Multi-tenant backend with agent lifecycle, LLM routing, scheduling, and scale-to-zero.
 **Delivered:**
 - Rust backend (10 crates, single binary)
@@ -13,38 +13,56 @@
 - External scheduler (cron jobs survive agent sleep)
 - Idle monitor (scale-to-zero, task-aware)
 - Notifications with real-time broadcast
-- Docker Compose infrastructure (Traefik + Postgres + Redis)
+- Docker Compose infrastructure (Postgres + Redis)
 - Swagger UI for API testing
 - 16 unit tests + 22 integration tests
 
-**Not in Phase 1:** Web frontend, messaging channels, billing, CRIU, Firecracker.
+**Not in Phase 1:** Web frontend, messaging channels, billing, Firecracker.
 
-## Phase 1.5 — Usability (Next)
-**Goal:** Make it usable by non-developers.
-**Planned:**
-- Web frontend (likely Next.js or HTMX)
-- Telegram bot integration (first messaging channel)
-- Custom agent personalities (system prompts)
-- Graceful sleep hooks (agent saves state before stop)
-- Agent workspace (file uploads, knowledge base)
+## Phase 1.5 — E2E Hardening ✅
+**Goal:** Prove every backend feature works end-to-end on Docker.
+**Delivered:**
+- Full chat roundtrip (signup → create agent → send message → LLM response)
+- Sleep/wake cycle verified
+- Multi-tenant isolation confirmed
 
-## Phase 2 — Scale & Monetize
-**Goal:** Handle 1,000+ users, start charging.
+## Phase 2 — Frontend + In-App Chat ✅
+**Goal:** Full web UI with real-time token-streaming chat.
+**Delivered:**
+- React 19 + Vite + TypeScript + Tailwind CSS + shadcn/ui
+- Auth pages (login/signup) with JWT handling
+- Dashboard (agent list, create/delete, status badges)
+- In-app chat UI (WhatsApp-style with real-time token streaming)
+- WebSocket → SSE bridge pipeline (chat-bridge.js in agent containers)
+- Ed25519 device pairing (pair-device.js auto-approves)
+- Agent wake endpoint (POST /api/agents/{id}/wake, ~450s budget)
+- Usage, Schedules, Notifications pages
+- Frontend served via nginx (proxies /api to backend)
+
+**Chat Architecture:**
+```
+Browser WS → Backend (chat.rs) → HTTP POST → chat-bridge.js:3001
+             ↑                                      ↓
+         SSE parsing                         WS → OpenClaw gateway:3000
+             ↓                                      ↑
+         WS chunks → Browser               LLM response (SSE)
+```
+
+## Phase 3 — Firecracker + Optimization (Next)
+**Goal:** <200ms wake, VM isolation, local disk snapshots. Then monetize.
 **Planned:**
-- CRIU checkpoint/restore (1-2s cold starts, 100% memory fidelity)
+- Custom Linux rootfs (minimal image with Node.js + OpenClaw)
+- Stripped-down Linux kernel for Firecracker
+- FirecrackerRuntime (same AgentRuntime trait interface)
+- TAP networking (each VM gets a tap interface + NAT)
+- Native VM snapshotting (CreateSnapshot/LoadSnapshot — no CRIU needed)
+- Jailer + security (Firecracker jailer for prod isolation)
 - Stripe billing (free → pro upgrade flow)
-- Multi-agent per user
-- Admin dashboard (usage analytics, user management)
-- E2E test suite
-
-## Phase 3 — Production Grade
-**Goal:** Multi-region, hardware isolation, enterprise features.
-**Planned:**
-- Firecracker microVMs (<200ms cold starts, snapshot portability)
-- S3-backed snapshots (cold storage at $0.023/GB/month)
 - Multi-region deployment (snapshot restore at edge)
-- Live migration between hosts
-- Enterprise SSO, SLA, dedicated infrastructure
+- Cost tracking per model ($)
+
+### Key Decision: Skip CRIU
+Firecracker has native VM snapshotting (~125ms restore). CRIU adds complexity (PID namespace issues, file descriptor leaks) for marginal benefit. Skip directly from Docker to Firecracker.
 
 ## Ideas Explored and Parked
 
