@@ -1,8 +1,10 @@
 # Firecracker MicroVM PoC
 
-Standalone proof-of-concept: boot, snapshot-sleep, snapshot-wake a Firecracker microVM with bidirectional networking and HTTP health check.
+Standalone proof-of-concept for OneClick.ai: boot, snapshot-sleep, snapshot-wake Firecracker microVMs with bidirectional networking and OpenClaw AI gateway.
 
 ## Results
+
+### Stage 1 — Basic VM (busybox httpd)
 
 | Operation | Time |
 |-----------|------|
@@ -11,7 +13,16 @@ Standalone proof-of-concept: boot, snapshot-sleep, snapshot-wake a Firecracker m
 | Health check after restore | ~25ms |
 | 5-cycle stress test | All pass, max 106ms |
 
-Target was <500ms restore — achieved **~105ms** consistently.
+### Stage 2 — OpenClaw in Firecracker
+
+| Operation | Time |
+|-----------|------|
+| Cold boot (kernel + OpenClaw gateway + bridge) | ~30s |
+| Snapshot restore | **~10-12ms** |
+| Chat after restore | Immediate |
+| 5-cycle stress test | 5/5 restores pass, 10-12ms each |
+
+Target was <500ms restore — achieved **10-12ms** for OpenClaw VMs.
 
 ## Prerequisites
 
@@ -19,9 +30,11 @@ Target was <500ms restore — achieved **~105ms** consistently.
 - Firecracker v1.12+ installed at `/usr/local/bin/firecracker`
 - Rust toolchain
 - `sudo` access (for TAP networking)
-- `debootstrap` (for building rootfs)
+- `debootstrap` (for Stage 1 rootfs)
+- Docker (for Stage 2 rootfs — exports `oneclick-agent:latest` image)
+- Groq API key (for Stage 2 LLM chat)
 
-## Quick Start
+## Quick Start — Stage 1 (Basic)
 
 ```bash
 # 1. Build rootfs (one-time, requires sudo + debootstrap)
@@ -44,8 +57,7 @@ cargo run --release -- check    # Verify still healthy
 cargo run --release -- destroy  # Clean up
 
 # 5. Run 5-cycle stress test
-cargo run --release -- create
-cargo run --release -- start
+cargo run --release -- create && cargo run --release -- start
 cargo run --release -- stress
 cargo run --release -- destroy
 
@@ -53,7 +65,41 @@ cargo run --release -- destroy
 bash scripts/teardown-network.sh tap0
 ```
 
+## Quick Start — Stage 2 (OpenClaw)
+
+```bash
+# 1. Build the Docker agent image first (from repo root)
+cd /path/to/oneclick-ai && docker compose build agent-runtime
+
+# 2. Build OpenClaw rootfs (exports Docker image → ext4)
+source .env  # needs GROQ_API_KEY
+cd local_poc/firecracker
+bash scripts/build-rootfs-openclaw.sh oneclick-agent:latest "$GROQ_API_KEY"
+
+# 3. Set up networking
+sudo bash scripts/setup-network.sh tap0
+
+# 4. Run with openclaw profile
+cargo run --release -- --profile openclaw create
+cargo run --release -- --profile openclaw start
+cargo run --release -- --profile openclaw check
+
+# 5. Test chat
+cargo run --release -- --profile openclaw chat "Hello, what is 2+2?"
+
+# 6. Snapshot sleep/wake cycle
+cargo run --release -- --profile openclaw stop    # Snapshot + kill
+cargo run --release -- --profile openclaw wake    # Restore in ~12ms
+cargo run --release -- --profile openclaw chat "Are you still there?"
+
+# 7. Stress test
+cargo run --release -- --profile openclaw stress
+cargo run --release -- --profile openclaw destroy
+```
+
 ## Architecture
+
+### Stage 1
 
 ```
 Host (172.16.0.1)          Firecracker VM (172.16.0.2)
@@ -64,13 +110,32 @@ Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 │   (Unix sock)│           │                      │
 │              │  HTTP     │ busybox httpd :8080   │
 │ health_check ├───────────┤  /health → JSON      │
-│   (TCP)      │           │  /index.html         │
 └──────┬───────┘           └──────────────────────┘
        │
        ▼
-  Firecracker API
-  (Unix socket)
-  /tmp/fc-poc.socket
+  Firecracker API (Unix socket)
+```
+
+### Stage 2
+
+```
+Host (172.16.0.1)          Firecracker VM (172.16.0.2)
+┌──────────────┐           ┌──────────────────────────┐
+│ Rust CLI     │           │ Linux 6.1 kernel         │
+│              │  TAP/tap0 │                          │
+│ fc_request() ├───────────┤ eth0 (virtio-net)        │
+│   (Unix sock)│           │                          │
+│              │  :3001    │ chat-bridge.js (:3001)   │
+│ health_check ├───────────┤   ↕ WebSocket            │
+│   (TCP)      │           │ OpenClaw gateway (:3000) │
+│              │  :3000    │   ↕ HTTPS                │
+│ cmd_chat()   ├───────────┤ Groq/OpenRouter API      │
+│   (SSE)      │           │                          │
+│              │           │ pair-device.js (auto)     │
+└──────┬───────┘           └──────────────────────────┘
+       │
+       ▼
+  Firecracker API (Unix socket)
 ```
 
 ## CLI Commands
@@ -79,11 +144,14 @@ Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 |---------|-------------|
 | `create` | Start Firecracker process, configure VM (kernel, rootfs, network) |
 | `start` | Send InstanceStart, wait for HTTP health check |
-| `check` | Verify HTTP server responds at 172.16.0.2:8080 |
+| `check` | Verify health endpoint responds |
 | `stop` | Pause VM → full snapshot → kill Firecracker |
 | `wake` | New Firecracker process → load snapshot → resume |
 | `destroy` | Kill Firecracker, delete snapshots |
 | `stress` | Run 5 consecutive stop/wake cycles, report times |
+| `chat <msg>` | Send chat message via bridge SSE endpoint (openclaw profile) |
+
+Use `--profile openclaw` for Stage 2 (default is `basic` for Stage 1).
 
 ## Networking
 
@@ -94,50 +162,35 @@ TAP device `tap0` bridges host and VM:
 
 ## Rootfs
 
-Minimal Debian bookworm (400MB ext4) built with debootstrap:
-- busybox (httpd for health check)
-- iproute2 (network config)
-- python3-minimal (for future use)
-- Custom `/sbin/fc-init` as PID 1 (no systemd)
+### Stage 1 — Minimal (400MB)
+Built with debootstrap (Debian bookworm): busybox httpd, iproute2, python3-minimal.
+
+### Stage 2 — OpenClaw (4GB)
+Exported from `oneclick-agent:latest` Docker image: Node.js 24, OpenClaw 2026.4.5, chat-bridge.js, pair-device.js.
+
+Key rootfs fixes applied by build script:
+- `/bin/bash` → `/usr/bin/bash` symlink (Docker image doesn't have `/bin/bash`)
+- Static busybox binary for `ip` command (iproute2 not in Docker image)
+- Custom `/sbin/fc-init` as PID 1 (no systemd, writes OpenClaw config directly)
 
 ## Snapshot Format
 
-- `snapshots/vm.snap` — VM state (29KB)
-- `snapshots/vm.mem` — Full memory dump (256MB = mem_size_mib)
+- `snapshots/vm.snap` — VM state (~29KB)
+- `snapshots/vm.mem` — Full memory dump (256MB basic, 1.5GB openclaw)
 
-## Manual Boot (curl commands)
+## Troubleshooting
 
-```bash
-# Start Firecracker
-touch /tmp/fc.log
-firecracker --api-sock /tmp/fc.socket --log-path /tmp/fc.log --level Info &
+### Kernel panic "init failed (error -2)"
+The shebang `#!/bin/bash` fails because `/bin/bash` doesn't exist. Create symlink: `ln -sf /usr/bin/bash /bin/bash`
 
-# Configure
-RESOURCES=$(pwd)/resources
-curl --unix-socket /tmp/fc.socket -X PUT http://localhost/boot-source \
-  -H "Content-Type: application/json" \
-  -d "{\"kernel_image_path\":\"$RESOURCES/vmlinux-6.1\",\"boot_args\":\"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/fc-init\"}"
+### Network: ARP "(incomplete)" for 172.16.0.2
+The `ip` command is missing from rootfs. The build script installs static busybox and creates `/sbin/ip` symlink.
 
-curl --unix-socket /tmp/fc.socket -X PUT http://localhost/drives/rootfs \
-  -H "Content-Type: application/json" \
-  -d "{\"drive_id\":\"rootfs\",\"path_on_host\":\"$RESOURCES/rootfs.ext4\",\"is_root_device\":true,\"is_read_only\":false}"
+### OpenClaw: Rate limit errors
+Groq free tier has low TPM limits. Use `meta-llama/llama-4-scout-17b-16e-instruct` (30K TPM) with `native: false` to minimize system prompt tokens.
 
-curl --unix-socket /tmp/fc.socket -X PUT http://localhost/machine-config \
-  -H "Content-Type: application/json" \
-  -d '{"vcpu_count":2,"mem_size_mib":256}'
-
-curl --unix-socket /tmp/fc.socket -X PUT http://localhost/network-interfaces/eth0 \
-  -H "Content-Type: application/json" \
-  -d '{"iface_id":"eth0","guest_mac":"AA:FC:00:00:00:01","host_dev_name":"tap0"}'
-
-# Boot
-curl --unix-socket /tmp/fc.socket -X PUT http://localhost/actions \
-  -H "Content-Type: application/json" -d '{"action_type":"InstanceStart"}'
-
-# Test
-sleep 2
-curl http://172.16.0.2:8080/health
-```
+### Chat bridge: "Gateway not connected"
+Wait ~30s after cold boot for gateway to finish starting. After snapshot restore, the bridge reconnects instantly.
 
 ## Files
 
@@ -146,13 +199,16 @@ local_poc/firecracker/
 ├── Cargo.toml
 ├── README.md
 ├── src/
-│   └── main.rs          # Rust CLI (create/start/stop/wake/check/destroy/stress)
+│   └── main.rs                    # Rust CLI with --profile flag
 ├── scripts/
-│   ├── build-rootfs.sh  # Build minimal Debian ext4 rootfs
-│   ├── setup-network.sh # Create TAP device + NAT
+│   ├── build-rootfs.sh            # Stage 1: minimal Debian rootfs
+│   ├── build-rootfs-openclaw.sh   # Stage 2: OpenClaw rootfs from Docker
+│   ├── setup-network.sh           # Create TAP device + NAT
 │   └── teardown-network.sh
 ├── resources/
-│   ├── vmlinux-6.1      # Firecracker CI kernel (download)
-│   └── rootfs.ext4      # Built by build-rootfs.sh
-└── snapshots/           # VM state + memory snapshots
+│   ├── vmlinux-6.1                # Firecracker CI kernel (download)
+│   ├── rootfs.ext4                # Stage 1 rootfs (build-rootfs.sh)
+│   └── rootfs-openclaw.ext4       # Stage 2 rootfs (build-rootfs-openclaw.sh)
+├── snapshots/                     # Stage 1 VM snapshots
+└── snapshots-openclaw/            # Stage 2 VM snapshots
 ```

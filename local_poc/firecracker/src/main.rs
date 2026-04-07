@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use hyper::body::Incoming;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
@@ -12,21 +12,75 @@ use tokio::net::UnixStream;
 use tokio::process::Command;
 
 const VM_IP: &str = "172.16.0.2";
-const VM_PORT: u16 = 8080;
 const KERNEL_PATH: &str = "resources/vmlinux-6.1";
-const ROOTFS_PATH: &str = "resources/rootfs.ext4";
 const SOCKET_PATH: &str = "/tmp/fc-poc.socket";
 const LOG_PATH: &str = "/tmp/fc-poc.log";
 const PID_FILE: &str = "/tmp/fc-poc.pid";
-const SNAPSHOT_DIR: &str = "snapshots";
-const SNAPSHOT_STATE: &str = "snapshots/vm.snap";
-const SNAPSHOT_MEM: &str = "snapshots/vm.mem";
 const TAP_DEV: &str = "tap0";
 const GUEST_MAC: &str = "AA:FC:00:00:00:01";
+
+// Stage 1 (basic) defaults
+const BASIC_ROOTFS: &str = "resources/rootfs.ext4";
+const BASIC_PORT: u16 = 8080;
+const BASIC_MEM_MIB: u32 = 256;
+const BASIC_HEALTH_PATH: &str = "/health";
+const BASIC_BOOT_TIMEOUT: u64 = 30;
+
+// Stage 2 (openclaw) defaults
+const OPENCLAW_ROOTFS: &str = "resources/rootfs-openclaw.ext4";
+const _OPENCLAW_GATEWAY_PORT: u16 = 3000;
+const OPENCLAW_BRIDGE_PORT: u16 = 3001;
+const OPENCLAW_MEM_MIB: u32 = 1536;
+const OPENCLAW_HEALTH_PATH: &str = "/health";
+const OPENCLAW_BOOT_TIMEOUT: u64 = 600;
+
+#[derive(Copy, Clone, ValueEnum, Debug)]
+enum Profile {
+    /// Stage 1: minimal rootfs with busybox httpd
+    Basic,
+    /// Stage 2: OpenClaw gateway + chat bridge
+    Openclaw,
+}
+
+struct ProfileConfig {
+    rootfs: &'static str,
+    health_port: u16,
+    health_path: &'static str,
+    mem_mib: u32,
+    boot_timeout: u64,
+    snapshot_dir: &'static str,
+}
+
+impl Profile {
+    fn config(&self) -> ProfileConfig {
+        match self {
+            Profile::Basic => ProfileConfig {
+                rootfs: BASIC_ROOTFS,
+                health_port: BASIC_PORT,
+                health_path: BASIC_HEALTH_PATH,
+                mem_mib: BASIC_MEM_MIB,
+                boot_timeout: BASIC_BOOT_TIMEOUT,
+                snapshot_dir: "snapshots",
+            },
+            Profile::Openclaw => ProfileConfig {
+                rootfs: OPENCLAW_ROOTFS,
+                health_port: OPENCLAW_BRIDGE_PORT,
+                health_path: OPENCLAW_HEALTH_PATH,
+                mem_mib: OPENCLAW_MEM_MIB,
+                boot_timeout: OPENCLAW_BOOT_TIMEOUT,
+                snapshot_dir: "snapshots-openclaw",
+            },
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "firecracker-poc", about = "Firecracker MicroVM PoC CLI")]
 struct Cli {
+    /// VM profile (basic = Stage 1, openclaw = Stage 2)
+    #[arg(long, value_enum, default_value_t = Profile::Basic)]
+    profile: Profile,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -47,6 +101,12 @@ enum Commands {
     Destroy,
     /// Run 5 consecutive stop/wake cycles as a stress test
     Stress,
+    /// Send a chat message via the bridge (openclaw profile only)
+    Chat {
+        /// The message to send
+        #[arg(default_value = "Hello! Please respond with a short greeting.")]
+        message: String,
+    },
 }
 
 // Firecracker API request/response types
@@ -165,7 +225,8 @@ async fn start_firecracker_process() -> Result<u32> {
     // Create log file
     tokio::fs::write(LOG_PATH, "").await?;
 
-    let child = Command::new("firecracker")
+    let child = Command::new("sudo")
+        .arg("firecracker")
         .arg("--api-sock")
         .arg(SOCKET_PATH)
         .arg("--log-path")
@@ -183,6 +244,13 @@ async fn start_firecracker_process() -> Result<u32> {
     // Wait for socket to appear
     for _ in 0..50 {
         if Path::new(SOCKET_PATH).exists() {
+            // Make socket accessible to non-root (FC runs as root via sudo)
+            let _ = Command::new("sudo")
+                .arg("chmod")
+                .arg("666")
+                .arg(SOCKET_PATH)
+                .output()
+                .await;
             // Save PID
             tokio::fs::write(PID_FILE, pid.to_string()).await?;
             return Ok(pid);
@@ -197,18 +265,21 @@ async fn start_firecracker_process() -> Result<u32> {
 async fn kill_firecracker() -> Result<()> {
     if let Ok(pid_str) = tokio::fs::read_to_string(PID_FILE).await {
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            let _ = Command::new("kill")
-                .arg(pid.to_string())
+            // The PID file stores the sudo process PID; find the actual FC child
+            let _ = Command::new("sudo")
+                .arg("sh")
+                .arg("-c")
+                .arg(format!("kill {} 2>/dev/null; sleep 1; kill -9 {} 2>/dev/null", pid, pid))
                 .output()
                 .await;
-            // Wait a moment for clean shutdown
+            // Also kill any firecracker process that might be a child of sudo
+            let _ = Command::new("sudo")
+                .arg("sh")
+                .arg("-c")
+                .arg("pkill -f 'firecracker --api-sock /tmp/fc-poc' 2>/dev/null")
+                .output()
+                .await;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            // Force kill if still alive
-            let _ = Command::new("kill")
-                .arg("-9")
-                .arg(pid.to_string())
-                .output()
-                .await;
         }
     }
     let _ = tokio::fs::remove_file(PID_FILE).await;
@@ -223,7 +294,7 @@ fn abs_path(relative: &str) -> String {
 }
 
 /// Configure the VM (boot source, drives, machine config, network)
-async fn configure_vm() -> Result<()> {
+async fn configure_vm(cfg: &ProfileConfig) -> Result<()> {
     // Boot source
     let boot = BootSource {
         kernel_image_path: abs_path(KERNEL_PATH),
@@ -237,7 +308,7 @@ async fn configure_vm() -> Result<()> {
     // Root drive
     let drive = Drive {
         drive_id: "rootfs".into(),
-        path_on_host: abs_path(ROOTFS_PATH),
+        path_on_host: abs_path(cfg.rootfs),
         is_root_device: true,
         is_read_only: false,
     };
@@ -246,10 +317,10 @@ async fn configure_vm() -> Result<()> {
         bail!("drives failed: {} {}", status, body);
     }
 
-    // Machine config
+    // Machine config — OpenClaw needs more memory for Node.js
     let config = MachineConfig {
         vcpu_count: 2,
-        mem_size_mib: 256,
+        mem_size_mib: cfg.mem_mib,
         track_dirty_pages: true,
     };
     let (status, body) = fc_request("PUT", "/machine-config", Some(serde_json::to_string(&config)?)).await?;
@@ -288,10 +359,10 @@ async fn instance_start() -> Result<()> {
 }
 
 /// Check if the HTTP server in the VM responds
-async fn health_check() -> Result<bool> {
+async fn health_check(port: u16, path: &str) -> Result<bool> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let addr = format!("{}:{}", VM_IP, VM_PORT);
+    let addr = format!("{}:{}", VM_IP, port);
     let stream = match tokio::time::timeout(
         std::time::Duration::from_secs(3),
         tokio::net::TcpStream::connect(&addr),
@@ -301,7 +372,7 @@ async fn health_check() -> Result<bool> {
     };
 
     let (mut reader, mut writer) = stream.into_split();
-    let req = format!("GET /health HTTP/1.0\r\nHost: {}\r\n\r\n", addr);
+    let req = format!("GET {} HTTP/1.0\r\nHost: {}\r\n\r\n", path, addr);
     if writer.write_all(req.as_bytes()).await.is_err() {
         return Ok(false);
     }
@@ -320,10 +391,10 @@ async fn health_check() -> Result<bool> {
 }
 
 /// Wait for the VM to become healthy
-async fn wait_for_health(timeout_secs: u64) -> Result<bool> {
+async fn wait_for_health(timeout_secs: u64, port: u16, path: &str) -> Result<bool> {
     let deadline = Instant::now() + std::time::Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
-        if health_check().await.unwrap_or(false) {
+        if health_check(port, path).await.unwrap_or(false) {
             return Ok(true);
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -332,9 +403,12 @@ async fn wait_for_health(timeout_secs: u64) -> Result<bool> {
 }
 
 /// Create snapshot (pause → snapshot → kill)
-async fn snapshot_sleep() -> Result<()> {
+async fn snapshot_sleep(snapshot_dir: &str) -> Result<()> {
+    let snap_state = format!("{}/vm.snap", snapshot_dir);
+    let snap_mem = format!("{}/vm.mem", snapshot_dir);
+
     // Ensure snapshot directory exists
-    tokio::fs::create_dir_all(SNAPSHOT_DIR).await?;
+    tokio::fs::create_dir_all(snapshot_dir).await?;
 
     // Pause the VM (PATCH /vm with state: Paused)
     let (status, body) = fc_request(
@@ -350,14 +424,14 @@ async fn snapshot_sleep() -> Result<()> {
     // Create snapshot
     let snap = SnapshotCreate {
         snapshot_type: "Full".into(),
-        snapshot_path: abs_path(SNAPSHOT_STATE),
-        mem_file_path: abs_path(SNAPSHOT_MEM),
+        snapshot_path: abs_path(&snap_state),
+        mem_file_path: abs_path(&snap_mem),
     };
     let (status, body) = fc_request("PUT", "/snapshot/create", Some(serde_json::to_string(&snap)?)).await?;
     if status != 204 {
         bail!("CreateSnapshot failed: {} {}", status, body);
     }
-    println!("  Snapshot saved to {}", SNAPSHOT_DIR);
+    println!("  Snapshot saved to {}", snapshot_dir);
 
     // Kill the Firecracker process
     kill_firecracker().await?;
@@ -367,7 +441,9 @@ async fn snapshot_sleep() -> Result<()> {
 }
 
 /// Restore from snapshot
-async fn snapshot_wake() -> Result<std::time::Duration> {
+async fn snapshot_wake(snapshot_dir: &str) -> Result<std::time::Duration> {
+    let snap_state = format!("{}/vm.snap", snapshot_dir);
+    let snap_mem = format!("{}/vm.mem", snapshot_dir);
     let start = Instant::now();
 
     // Start a new Firecracker process
@@ -376,10 +452,10 @@ async fn snapshot_wake() -> Result<std::time::Duration> {
 
     // Load snapshot
     let load = SnapshotLoad {
-        snapshot_path: abs_path(SNAPSHOT_STATE),
+        snapshot_path: abs_path(&snap_state),
         mem_backend: MemBackend {
             backend_type: "File".into(),
-            backend_path: abs_path(SNAPSHOT_MEM),
+            backend_path: abs_path(&snap_mem),
         },
         enable_diff_snapshots: false,
         resume_vm: true,
@@ -395,61 +471,61 @@ async fn snapshot_wake() -> Result<std::time::Duration> {
 
 // Commands
 
-async fn cmd_create() -> Result<()> {
+async fn cmd_create(cfg: &ProfileConfig) -> Result<()> {
     println!("Creating VM...");
 
     let pid = start_firecracker_process().await?;
     println!("  Firecracker process started: PID {}", pid);
 
-    configure_vm().await?;
-    println!("  VM configured (kernel, rootfs, network)");
+    configure_vm(cfg).await?;
+    println!("  VM configured (kernel={}, rootfs={}, mem={}MB)", KERNEL_PATH, cfg.rootfs, cfg.mem_mib);
     println!("VM created successfully. Run 'start' to boot it.");
     Ok(())
 }
 
-async fn cmd_start() -> Result<()> {
-    println!("Starting VM...");
+async fn cmd_start(cfg: &ProfileConfig) -> Result<()> {
+    println!("Starting VM (timeout={}s)...", cfg.boot_timeout);
     let start = Instant::now();
 
     instance_start().await?;
     println!("  InstanceStart sent ({:.0}ms)", start.elapsed().as_millis());
 
-    println!("  Waiting for health check...");
-    if wait_for_health(30).await? {
-        println!("VM started and healthy ({:.0}ms total)", start.elapsed().as_millis());
+    println!("  Waiting for health check on port {}{}...", cfg.health_port, cfg.health_path);
+    if wait_for_health(cfg.boot_timeout, cfg.health_port, cfg.health_path).await? {
+        println!("VM started and healthy ({:.1}s total)", start.elapsed().as_secs_f64());
     } else {
-        bail!("VM started but health check failed after 30s");
+        bail!("VM started but health check failed after {}s", cfg.boot_timeout);
     }
     Ok(())
 }
 
-async fn cmd_check() -> Result<()> {
-    print!("Health check... ");
+async fn cmd_check(cfg: &ProfileConfig) -> Result<()> {
+    print!("Health check (port {}{})... ", cfg.health_port, cfg.health_path);
     let start = Instant::now();
-    if health_check().await? {
+    if health_check(cfg.health_port, cfg.health_path).await? {
         println!("OK ({:.0}ms)", start.elapsed().as_millis());
     } else {
         println!("FAILED");
-        bail!("Health check failed — VM HTTP server not responding");
+        bail!("Health check failed — server not responding on port {}", cfg.health_port);
     }
     Ok(())
 }
 
-async fn cmd_stop() -> Result<()> {
+async fn cmd_stop(cfg: &ProfileConfig) -> Result<()> {
     println!("Stopping VM (snapshot sleep)...");
-    snapshot_sleep().await?;
+    snapshot_sleep(cfg.snapshot_dir).await?;
     println!("VM stopped. Snapshot saved.");
     Ok(())
 }
 
-async fn cmd_wake() -> Result<()> {
+async fn cmd_wake(cfg: &ProfileConfig) -> Result<()> {
     println!("Waking VM (snapshot restore)...");
-    let restore_time = snapshot_wake().await?;
+    let restore_time = snapshot_wake(cfg.snapshot_dir).await?;
     println!("  Snapshot restored in {:.0}ms", restore_time.as_millis());
 
     println!("  Waiting for health check...");
     let start = Instant::now();
-    if wait_for_health(10).await? {
+    if wait_for_health(10, cfg.health_port, cfg.health_path).await? {
         println!("VM awake and healthy ({:.0}ms after restore)", start.elapsed().as_millis());
     } else {
         bail!("VM restored but health check failed after 10s");
@@ -457,17 +533,18 @@ async fn cmd_wake() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_destroy() -> Result<()> {
+async fn cmd_destroy(cfg: &ProfileConfig) -> Result<()> {
     println!("Destroying VM...");
     kill_firecracker().await?;
-    // Clean up snapshots
-    let _ = tokio::fs::remove_file(SNAPSHOT_STATE).await;
-    let _ = tokio::fs::remove_file(SNAPSHOT_MEM).await;
+    let snap_state = format!("{}/vm.snap", cfg.snapshot_dir);
+    let snap_mem = format!("{}/vm.mem", cfg.snapshot_dir);
+    let _ = tokio::fs::remove_file(&snap_state).await;
+    let _ = tokio::fs::remove_file(&snap_mem).await;
     println!("VM destroyed.");
     Ok(())
 }
 
-async fn cmd_stress() -> Result<()> {
+async fn cmd_stress(cfg: &ProfileConfig) -> Result<()> {
     println!("=== 5-cycle stress test ===\n");
     let mut restore_times = Vec::new();
 
@@ -476,12 +553,12 @@ async fn cmd_stress() -> Result<()> {
 
         // Stop (snapshot)
         println!("  Stopping (snapshot)...");
-        snapshot_sleep().await?;
+        snapshot_sleep(cfg.snapshot_dir).await?;
         println!("  Stopped.");
 
         // Wake (restore)
         println!("  Waking (restore)...");
-        let restore_time = snapshot_wake().await?;
+        let restore_time = snapshot_wake(cfg.snapshot_dir).await?;
         let ms = restore_time.as_millis();
         restore_times.push(ms);
         println!("  Restored in {}ms", ms);
@@ -489,7 +566,7 @@ async fn cmd_stress() -> Result<()> {
         // Health check
         print!("  Health check... ");
         let start = Instant::now();
-        if wait_for_health(10).await? {
+        if wait_for_health(10, cfg.health_port, cfg.health_path).await? {
             println!("OK ({:.0}ms)", start.elapsed().as_millis());
         } else {
             bail!("Health check failed on cycle {}", i);
@@ -514,17 +591,108 @@ async fn cmd_stress() -> Result<()> {
     Ok(())
 }
 
+/// Send a chat message via the bridge (Stage 2 only)
+async fn cmd_chat(message: &str) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    println!("Sending chat message via bridge (port {})...", OPENCLAW_BRIDGE_PORT);
+    println!("  Message: {}", message);
+
+    let addr = format!("{}:{}", VM_IP, OPENCLAW_BRIDGE_PORT);
+    let body = serde_json::json!({ "message": message }).to_string();
+
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .context("Connection timeout")?
+    .context("Failed to connect to bridge")?;
+
+    let (mut reader, mut writer) = stream.into_split();
+
+    let req = format!(
+        "POST /chat HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        addr,
+        body.len(),
+        body
+    );
+    writer.write_all(req.as_bytes()).await?;
+
+    println!("\n--- Response (SSE stream) ---");
+    let mut buf = vec![0u8; 8192];
+    let mut accumulated = String::new();
+    let deadline = Instant::now() + std::time::Duration::from_secs(120);
+
+    loop {
+        if Instant::now() > deadline {
+            println!("\n[Timeout after 120s]");
+            break;
+        }
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            reader.read(&mut buf),
+        ).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]);
+                accumulated.push_str(&chunk);
+
+                // Parse SSE events from accumulated data
+                while let Some(data_start) = accumulated.find("data: ") {
+                    let rest = &accumulated[data_start + 6..];
+                    if let Some(end) = rest.find('\n') {
+                        let data_line = &rest[..end].trim();
+                        if *data_line == "[DONE]" {
+                            println!("\n--- Chat complete ---");
+                            return Ok(());
+                        }
+                        // Try to parse as JSON
+                        if let Ok(evt) = serde_json::from_str::<serde_json::Value>(data_line) {
+                            if let Some(content) = evt.get("content").and_then(|c| c.as_str()) {
+                                print!("{}", content);
+                            }
+                            if let Some(msg) = evt.get("message").and_then(|m| m.as_str()) {
+                                if evt.get("type").and_then(|t| t.as_str()) == Some("error") {
+                                    println!("\n[Error: {}]", msg);
+                                }
+                            }
+                        }
+                        accumulated = accumulated[data_start + 6 + end + 1..].to_string();
+                    } else {
+                        break; // Incomplete line, wait for more data
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                bail!("Read error: {}", e);
+            }
+            Err(_) => {
+                println!("\n[No data for 30s, ending]");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let cfg = cli.profile.config();
+
+    println!("[profile: {:?}]", cli.profile);
 
     match cli.command {
-        Commands::Create => cmd_create().await,
-        Commands::Start => cmd_start().await,
-        Commands::Check => cmd_check().await,
-        Commands::Stop => cmd_stop().await,
-        Commands::Wake => cmd_wake().await,
-        Commands::Destroy => cmd_destroy().await,
-        Commands::Stress => cmd_stress().await,
+        Commands::Create => cmd_create(&cfg).await,
+        Commands::Start => cmd_start(&cfg).await,
+        Commands::Check => cmd_check(&cfg).await,
+        Commands::Stop => cmd_stop(&cfg).await,
+        Commands::Wake => cmd_wake(&cfg).await,
+        Commands::Destroy => cmd_destroy(&cfg).await,
+        Commands::Stress => cmd_stress(&cfg).await,
+        Commands::Chat { message } => cmd_chat(&message).await,
     }
 }

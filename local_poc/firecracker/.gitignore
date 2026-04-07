@@ -4,8 +4,10 @@ target/
 # Large binary resources (download/build locally)
 resources/vmlinux*
 resources/rootfs.ext4
+resources/rootfs-openclaw.ext4
 
 # Runtime state
 snapshots/
+snapshots-openclaw/
 *.socket
 *.pid
