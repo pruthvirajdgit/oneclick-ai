@@ -11,7 +11,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const WebSocket = require('/app/node_modules/ws');
+const WebSocket = require('ws');
 
 const PORT = 3001;
 const GW_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || 'oneclick-internal';

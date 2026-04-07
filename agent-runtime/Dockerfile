@@ -41,6 +41,7 @@ ENV AGENT_NAME="Assistant" \
     AGENT_SYSTEM_PROMPT="You are a helpful AI assistant." \
     AGENT_DOCS_PATH="/data/docs" \
     AGENT_PORT=3000 \
+    NODE_PATH=/app/node_modules \
     TZ=Asia/Kolkata
 
 EXPOSE 3000 3001
