@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 /// How far ahead to look for upcoming scheduled jobs before deciding an agent
 /// can safely be put to sleep.
-const UPCOMING_JOB_WINDOW_MINUTES: i64 = 20;
+const UPCOMING_JOB_WINDOW_MINUTES: i32 = 20;
 
 /// Background service that detects idle agents and puts them to sleep.
 ///
@@ -135,7 +135,7 @@ impl IdleMonitor {
     /// Return all running agents that have been idle longer than
     /// `idle_timeout`.
     async fn find_idle_agents(&self) -> anyhow::Result<Vec<Agent>> {
-        let timeout_minutes = (self.idle_timeout.as_secs() / 60) as i64;
+        let timeout_minutes = (self.idle_timeout.as_secs() / 60) as i32;
 
         let agents: Vec<Agent> = sqlx::query_as(
             "SELECT * FROM agents \

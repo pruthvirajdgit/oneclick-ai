@@ -22,7 +22,17 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "oneclick_backend=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| {
+                    "oneclick_backend=debug,\
+                     oneclick_api=info,\
+                     oneclick_orchestrator=info,\
+                     oneclick_monitor=info,\
+                     oneclick_scheduler=info,\
+                     oneclick_llm_proxy=info,\
+                     oneclick_notifications=info,\
+                     tower_http=debug"
+                        .into()
+                }),
         )
         .with(tracing_subscriber::fmt::layer().json())
         .init();
