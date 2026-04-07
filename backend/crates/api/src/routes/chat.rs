@@ -190,7 +190,7 @@ async fn bridge_chat(
                     "Bridge not ready (503: {body}), retrying in 3s..."
                 );
                 let _ =
-                    send_status(client_ws, "Connecting to agent (attempt {attempt}/10)...").await;
+                    send_status(client_ws, &format!("Connecting to agent (attempt {}/10)...", attempt)).await;
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 last_err = format!("Bridge 503: {body}");
             }

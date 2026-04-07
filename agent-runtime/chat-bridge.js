@@ -182,12 +182,19 @@ function connectToGateway() {
     console.log(`[bridge] WS closed (code=${code})`);
     isConnected = false;
     gatewayWs = null;
-    // Fail all pending chats
+    // Fail all pending chats — both pre-header and in-flight SSE streams
     for (const [key, pending] of pendingChats) {
       clearTimeout(pending.timeout);
       if (!pending.res.headersSent) {
         pending.res.writeHead(503);
         pending.res.end(JSON.stringify({ error: 'Gateway disconnected' }));
+      } else {
+        // SSE stream already in-flight — send error event and close
+        try {
+          pending.res.write(`data: ${JSON.stringify({ type: 'error', message: 'Gateway disconnected' })}\n\n`);
+          pending.res.write('data: [DONE]\n\n');
+          pending.res.end();
+        } catch {}
       }
     }
     pendingChats.clear();

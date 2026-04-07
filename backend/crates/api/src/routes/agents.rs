@@ -107,7 +107,7 @@ async fn delete_agent(
 
 /// `POST /api/agents/:id/wake` — Wake an agent and return its OpenClaw chat UI URL.
 ///
-/// Blocks until the agent is healthy (up to ~135s). The frontend should show
+/// Blocks until the agent is healthy (up to ~450s). The frontend should show
 /// a loading state while this request is in flight, then open the returned
 /// `chat_url` in a new browser tab.
 async fn wake_agent(
