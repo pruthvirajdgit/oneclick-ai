@@ -27,20 +27,23 @@ Open-source infrastructure for deploying and managing AI employees within your o
 
 ## Architecture
 
-Single Rust binary managing per-user AI agent containers with scale-to-zero.
+Single Rust binary managing per-user AI agent containers with scale-to-zero. React frontend with in-app chat UI.
 
 ```
-Your Network → Traefik → Rust Backend (port 8080)
-                             ├── API (auth, agents, schedules, usage, notifications)
-                             ├── Orchestrator (Docker container lifecycle)
-                             ├── LLM Proxy (Groq → OpenRouter fallback)
-                             ├── Scheduler (cron jobs — runs while agents sleep)
-                             ├── Monitor (idle detection → auto-sleep)
-                             └── Notifications (real-time broadcast)
-                                  │
-                                  ↓ Docker socket
-                        ┌─────────┼─────────┐
-                        agent-a    agent-b    agent-c  (OpenClaw containers)
+Browser → Frontend (nginx, port 80/3000)
+              ├── Static React app (dashboard, chat, auth)
+              └── /api/* → Rust Backend (port 8080)
+                              ├── API (auth, agents, schedules, usage, notifications)
+                              ├── Orchestrator (Docker container lifecycle)
+                              ├── LLM Proxy (Groq → OpenRouter fallback)
+                              ├── Scheduler (cron jobs — runs while agents sleep)
+                              ├── Monitor (idle detection → auto-sleep)
+                              └── Notifications (real-time broadcast)
+                                   │
+                                   ↓ Docker socket
+                         ┌─────────┼─────────┐
+                         agent-a    agent-b    agent-c  (OpenClaw containers)
+                         (chat-bridge.js on :3001, gateway on :3000)
 
 PostgreSQL 16 ← persistent data
 Redis 7       ← rate limits
@@ -52,36 +55,48 @@ Redis 7       ← rate limits
 git clone https://github.com/pruthvirajdgit/oneclick-ai.git
 cd oneclick-ai
 cp .env.example .env      # add your GROQ_API_KEY (free at console.groq.com)
+
+# Build agent image
+docker build -t oneclick-agent:latest agent-runtime/
+
+# Start the stack
 docker compose up -d --build
+
+# Frontend at http://localhost:3000
 # API at http://localhost:8080
 # Swagger UI at http://localhost:8080/swagger-ui/
 ```
 
-That's it. Create an account, spin up an agent, and start chatting.
+That's it. Create an account, spin up an agent, and start chatting — all from the browser.
 
 ## What You Get
 
 | Feature | Details |
 |---------|---------|
 | 🤖 **AI Agents** | Each user gets a personal agent (OpenClaw-powered) |
-| 💤 **Scale-to-Zero** | Idle agents auto-sleep — wake on demand (~90s cold start) |
+| 💤 **Scale-to-Zero** | Idle agents auto-sleep — wake on demand (~5-7 min cold start on Docker, <200ms planned with Firecracker) |
 | 🧠 **Persistent Memory** | Agents remember conversations across sessions |
 | ⏰ **Scheduling** | Cron-based task execution (agents work while you sleep) |
 | 🔀 **LLM Proxy** | Multi-provider fallback (Groq → OpenRouter), usage tracking |
 | 🔒 **Multi-Tenant** | User isolation — each user sees only their own agents |
 | 📊 **Usage Tracking** | Per-user token counts, daily limits, rate limiting |
 | 🔔 **Notifications** | Real-time alerts when agents complete tasks |
+| 💬 **In-App Chat** | WhatsApp-style chat UI with real-time token streaming |
 | 📖 **API-First** | Full REST + WebSocket API with Swagger UI |
 
 ## Project Structure
 
 ```
 oneclick-ai/
+├── frontend/                   # React 19 + Vite + Tailwind + shadcn/ui
+│   ├── src/pages/              # Auth, Dashboard, Chat, Usage, Schedules, Notifications
+│   ├── nginx.conf              # Serves static files + proxies /api to backend
+│   └── Dockerfile              # Multi-stage build (node → nginx)
 ├── backend/                    # Rust workspace (10 crates)
 │   ├── crates/
-│   │   ├── api/                # HTTP routes, middleware, WebSocket
-│   │   ├── orchestrator/       # Agent container lifecycle
-│   │   ├── llm-proxy/          # Multi-provider LLM routing
+│   │   ├── api/                # HTTP routes, middleware, WebSocket, SSE bridge
+│   │   ├── orchestrator/       # Agent container lifecycle (Docker, future Firecracker)
+│   │   ├── llm-proxy/          # Multi-provider LLM routing with SSE streaming
 │   │   ├── scheduler/          # Background cron runner
 │   │   ├── monitor/            # Idle agent detection
 │   │   ├── notifications/      # Real-time notification broadcast
@@ -91,9 +106,15 @@ oneclick-ai/
 │   │   └── webhook-receiver/   # Stub for Telegram/Slack integration
 │   ├── migrations/             # 6 sqlx migration files
 │   └── tests/                  # Integration tests
+├── agent-runtime/              # Custom OpenClaw agent image
+│   ├── Dockerfile              # Extends ghcr.io/openclaw/openclaw:latest
+│   ├── chat-bridge.js          # HTTP→WebSocket bridge (port 3001)
+│   ├── pair-device.js          # Auto-approve device pairing
+│   ├── entrypoint.sh           # Config generation + gateway startup
+│   └── oneclick-tools.js       # Agent tools plugin (schedules, notifications)
 ├── .context_bank/              # AI-readable project knowledge base
-├── docker-compose.yml          # Base stack (Traefik + Backend + PG + Redis)
-├── docker-compose.override.yml # Dev overrides (dashboard, debug ports)
+├── docker-compose.yml          # Base stack (Frontend + Backend + PG + Redis)
+├── docker-compose.override.yml # Dev overrides (debug ports)
 ├── docker-compose.prod.yml     # Prod overlay (TLS, read-only socket)
 └── .env.example                # Environment variable template
 ```
@@ -105,7 +126,8 @@ oneclick-ai/
 | POST | /api/auth/signup | — | Create account |
 | POST | /api/auth/login | — | Get JWT |
 | POST | /api/agents | JWT | Create agent |
-| WS | /api/agents/{id}/chat | JWT | Real-time chat with agent |
+| POST | /api/agents/{id}/wake | JWT | Wake a sleeping agent (~450s budget) |
+| WS | /api/agents/{id}/chat | JWT | Real-time chat with token streaming |
 | GET | /api/agents | JWT | List your agents |
 | POST | /api/schedules | JWT | Create scheduled task |
 | GET | /api/usage | JWT | Usage stats (today + all-time) |
@@ -125,7 +147,7 @@ cargo test --workspace --features integration       # Integration tests (needs P
 
 - **Phase 1** ✅ Rust backend, Docker containers, scale-to-zero, LLM proxy, scheduling
 - **Phase 1.5** ✅ E2E verified — full chat pipeline, sleep/wake, multi-tenant isolation
-- **Phase 2** — Web frontend (React + Vite + Tailwind), admin dashboard
+- **Phase 2** ✅ React frontend with in-app chat, SSE token streaming, WebSocket bridge
 - **Phase 3** — Firecracker microVMs (<200ms wake, VM isolation, snapshot portability)
 
 ## Configuration

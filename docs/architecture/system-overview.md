@@ -10,11 +10,12 @@ A multi-tenant AI agent platform where users sign up, get a personal AI agent, a
                          ┌──────────────────────┐
                          │     User's Browser     │
                          └──────────┬─────────────┘
-                                    │ HTTPS / WSS
+                                    │ HTTP / WSS
                                     ▼
                          ┌──────────────────────┐
-                         │       Traefik          │
-                         │   (Reverse Proxy/SSL)  │
+                         │     Frontend (nginx)   │
+                         │  React SPA on port 80  │
+                         │  /api/* → backend:8080  │
                          └──────────┬─────────────┘
                                     │
                          ┌──────────┴─────────────┐
@@ -36,8 +37,7 @@ A multi-tenant AI agent platform where users sign up, get a personal AI agent, a
                          │  │  AgentRuntime     │    │
                          │  │  (trait)          │    │
                          │  │                   │    │
-                         │  │  Phase 1: Docker  │    │
-                         │  │  Phase 2: CRIU    │    │
+                         │  │  Phase 1-2: Docker│    │
                          │  │  Phase 3: FC      │    │
                          │  └────────┬─────────┘    │
                          │           │               │
@@ -58,7 +58,8 @@ A multi-tenant AI agent platform where users sign up, get a personal AI agent, a
               │ Agent-1   │  │ Agent-2   │  │ Agent-N   │
               │ (running) │  │ (stopped) │  │ (stopped) │
               │ OpenClaw  │  │   💤      │  │   💤      │
-              └─────┬─────┘  └──────────┘  └──────────┘
+              │ bridge:3001│ └──────────┘  └──────────┘
+              └─────┬─────┘
                     │
                     ▼
               ┌──────────────────────┐
@@ -77,18 +78,18 @@ A multi-tenant AI agent platform where users sign up, get a personal AI agent, a
 
 ## Request Flow — User Sends a Message
 
-1. Browser sends WebSocket message to `wss://api.oneclick.ai/api/agents/:id/chat`
-2. Traefik terminates SSL, forwards to Rust backend
+1. Browser opens WebSocket to `/api/agents/:id/chat?token=<jwt>`
+2. Frontend nginx proxies to Rust backend on port 8080
 3. Backend validates JWT, checks rate limit (Redis INCR)
 4. Backend checks agent status in PostgreSQL
 5. If agent is stopped → Orchestrator wakes it (`docker start`)
-   - User sees "Agent waking up..."
-   - Backend polls health every 500ms (timeout 30s)
-6. Backend delivers any queued messages from `message_queue` table
-7. Backend forwards user message to OpenClaw agent (HTTP)
+   - User sees "Waking up agent..."
+   - Backend polls health every 3s (150 retries, ~450s budget)
+6. Backend sends HTTP POST to chat-bridge.js (port 3001) inside agent container
+7. chat-bridge.js translates HTTP→WebSocket for OpenClaw gateway (Ed25519 auth)
 8. Agent processes message, calls LLM via our proxy
-9. LLM Proxy routes to Groq (primary) → OpenRouter (fallback)
-10. Response streams back: Agent → Backend → WebSocket → Browser
+9. LLM Proxy routes to Groq (primary) → OpenRouter (fallback), streams SSE tokens
+10. Response streams back: LLM (SSE) → Agent → chat-bridge (SSE) → Backend → WebSocket → Browser
 11. Backend logs usage (tokens, provider) to PostgreSQL
 12. Backend updates `last_active` timestamp
 

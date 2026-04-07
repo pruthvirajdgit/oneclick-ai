@@ -7,13 +7,17 @@ Single Rust binary (monolith) managing per-user AI agent containers. Backend han
 ```
 Internet
   ↓
-Traefik (reverse proxy, SSL termination)
-  ↓
+┌──────────────────────────────────────────────────────┐
+│  Frontend (nginx, port 80/3000)                      │
+│  React 19 + Vite + Tailwind + shadcn/ui              │
+│  Serves static files, proxies /api/* to backend      │
+└──────────────────┬───────────────────────────────────┘
+                   ↓
 ┌──────────────────────────────────────────────────────┐
 │  Rust Backend (single binary, port 8080)             │
 │  ┌──────────┐ ┌──────────────┐ ┌──────────────┐     │
 │  │   API    │ │ Orchestrator │ │  LLM Proxy   │     │
-│  │ (axum)   │ │ (bollard)    │ │ (reqwest)    │     │
+│  │ (axum)   │ │ (bollard)    │ │ (reqwest+SSE)│     │
 │  └────┬─────┘ └──────┬───────┘ └──────┬───────┘     │
 │  ┌────┴─────┐ ┌──────┴───────┐ ┌──────┴───────┐     │
 │  │Scheduler │ │   Monitor    │ │Notifications │     │
@@ -27,10 +31,14 @@ Traefik (reverse proxy, SSL termination)
                        │ Docker socket
     ┌──────────────────┼──────────────────┐
     ↓                  ↓                  ↓
-┌─────────┐    ┌─────────┐       ┌─────────┐
-│agent-abc│    │agent-def│  ...  │agent-xyz│
-│(OpenClaw)│    │(OpenClaw)│       │(OpenClaw)│
-└─────────┘    └─────────┘       └─────────┘
+┌───────────┐  ┌───────────┐     ┌───────────┐
+│ agent-abc │  │ agent-def │ ... │ agent-xyz │
+│ (OpenClaw)│  │ (OpenClaw)│     │ (OpenClaw)│
+│ gateway   │  │ gateway   │     │ gateway   │
+│  :3000    │  │  :3000    │     │  :3000    │
+│ bridge    │  │ bridge    │     │ bridge    │
+│  :3001    │  │  :3001    │     │  :3001    │
+└───────────┘  └───────────┘     └───────────┘
     ↑                                  ↑
     └── Docker volumes (state persists)┘
 
@@ -56,14 +64,14 @@ main.rs (binary) depends on all crates, wires them together.
 ## Data Flow: User Sends Chat Message
 1. Client → `WS /api/agents/{id}/chat?token=<jwt>`
 2. API validates JWT, checks agent ownership
-3. If agent stopped → Orchestrator calls `docker start`, polls health (5 retries, 2s interval)
-4. API sends status messages to client: "Agent waking up..." → "Agent ready" → "Thinking..."
-5. API runs `docker exec` in agent container: `openclaw agent --agent main --message "..." --json`. This bypasses the OpenClaw gateway WebSocket protocol (device pairing, authentication).
-6. Backend streams stdout from the exec session (130s timeout) for the response
+3. If agent stopped → Orchestrator calls `docker start`, polls health (150 retries, 3s interval = ~450s budget)
+4. API sends status messages to client: "Waking up agent..." → "Agent ready" → "Thinking..."
+5. API sends HTTP POST to chat-bridge.js (port 3001) inside the agent container. The bridge translates HTTP→WebSocket for the OpenClaw gateway, handling device pairing and Ed25519 authentication automatically.
+6. chat-bridge.js returns an SSE stream. Backend parses SSE events and forwards tokens to the client WebSocket as `{type: "chunk"}` messages.
 7. Agent processes message, calls LLM via proxy: `POST http://backend:8080/internal/llm/v1/chat/completions` (auth encoded in `OPENROUTER_API_KEY` env var since OpenClaw can't send custom headers)
-8. LLM Proxy forces `stream: false`, truncates messages, routes to Groq (primary) → Groq 8B (fallback) → OpenRouter (last resort). If client expects SSE, proxy converts JSON response to SSE events.
+8. LLM Proxy supports true SSE streaming: routes to Groq (primary) → Groq 8B (fallback) → OpenRouter (last resort). Streams tokens back through the entire pipeline.
 9. LLM Proxy logs usage to PostgreSQL
-10. Response flows back: LLM → Proxy → Agent → exec stdout → Backend → WebSocket → Client
+10. Response flows back: LLM → Proxy (SSE) → Agent → chat-bridge (SSE) → Backend → WebSocket → Client
 11. Backend updates `agents.last_active`
 
 ## Data Flow: Scheduled Job Executes

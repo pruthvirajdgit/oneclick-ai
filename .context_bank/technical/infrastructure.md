@@ -5,17 +5,19 @@
 ### Services (docker-compose.yml)
 | Service | Image | Port | Purpose |
 |---------|-------|------|---------|
-| traefik | traefik:v3.0 | 80, 443 | Reverse proxy, SSL, routing (dashboard on 8090 in dev override only) |
-| backend | oneclick-backend (multi-stage build) | 8080 | Rust API server |
+| frontend | oneclick-frontend (multi-stage: node build → nginx) | 80, 3000 | React app (dashboard, chat, auth) + reverse proxy to backend |
+| backend | oneclick-backend (multi-stage Rust build) | 8080 | Rust API server |
 | postgres | postgres:16-alpine | 5432 | Primary database |
 | redis | redis:7-alpine | 6379 | Rate limits, session cache |
 
 ### Networking
 - All services on `oneclick-net` bridge network.
+- Frontend nginx proxies `/api/*` and `/swagger-ui/*` to backend on port 8080.
 - Backend mounts `/var/run/docker.sock` (`:ro` in prod) to create/manage agent containers as siblings.
 - Agent containers join `oneclick-net` dynamically (created by orchestrator).
 - Agents reach backend at `http://backend:8080`.
-- Backend reaches agents at `http://agent-{user_id_short}:3000`.
+- Backend reaches agents at `http://agent-{user_id_short}:3001` (chat-bridge) and port 3000 (gateway health).
+- Agent containers expose port 3000 (gateway) to a random host port for health checks.
 
 ### Volumes
 - `pgdata`: PostgreSQL data (persistent)
@@ -28,7 +30,7 @@
 - Backend: waits for healthy Postgres + Redis before starting
 
 ### Overrides
-- `docker-compose.override.yml`: Dev — Traefik insecure API + dashboard on port 8090, backend exposed on 8080
+- `docker-compose.override.yml`: Dev — backend exposed on 8080, debug ports
 - `docker-compose.prod.yml`: Prod overlay (not standalone) — TLS via Let's Encrypt, Docker socket `:ro`, `DOMAIN` and `ACME_EMAIL` required, no exposed DB/Redis ports
 
 ## PostgreSQL Schema
@@ -65,8 +67,10 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 - Labels: `oneclick.agent_id`, `oneclick.user_id`
 - TTY required: `tty: true` (gateway needs a TTY to run properly)
 - Named volume: `oneclick-agent-{container_name}:/home/node/.openclaw` (state persistence)
-- Health check: HTTP probe on `:3000` with 90s start-period
+- Health check: Direct HTTP probe to `http://localhost:{host_port}/health` with 150 retries × 3s interval (~450s budget). Start-period of 90s.
 - Restart policy: none (backend manages lifecycle)
+- Chat bridge: `chat-bridge.js` on port 3001 — translates HTTP POST → WebSocket for OpenClaw gateway. Uses Ed25519 keypair for device authentication. Returns SSE stream.
+- Device pairing: `pair-device.js` runs at container start, auto-approves the first device pairing request (120 attempts, 3s interval).
 - Env vars:
   - `OPENROUTER_API_KEY` = `{internal_secret}|{agent_id}|{user_id}` (encodes auth identity for internal endpoints; OpenClaw sends this as `Authorization: Bearer` header)
   - `OPENROUTER_BASE_URL` = `http://backend:8080/internal/llm/v1`
@@ -86,9 +90,12 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 
 ### Known Operational Gotchas
 1. LAN binding requires auth token — gateway refuses `bind: lan` without it
-2. Browser connections need device pairing: `openclaw devices approve <request-id>`
+2. Device pairing automated — `pair-device.js` auto-approves first connection; bridge generates Ed25519 keypair
 3. Docker Compose needs `tty: true` for the gateway to run properly
 4. OpenRouter model naming: gateway displays `openrouter/openrouter/<model>` (cosmetic)
+5. Gateway cold boot takes 5-7 minutes on WSL2 (heavy JS JIT compilation). Health budget is 450s.
+6. `require('ws')` must use `NODE_PATH=/app/node_modules` — pnpm store paths change between OpenClaw image versions
+7. Docker `start` on already-running container returns 304 (handled gracefully in orchestrator)
 
 ## Environment Variables
 ```
@@ -120,7 +127,9 @@ DOCKER_NETWORK        oneclick-net
 ### Local Dev
 ```bash
 cp .env.example .env  # fill in API keys
+docker build -t oneclick-agent:latest agent-runtime/
 docker compose up -d --build
+# Frontend at http://localhost:3000
 # Swagger UI at http://localhost:8080/swagger-ui/
 ```
 
@@ -128,4 +137,4 @@ docker compose up -d --build
 - Azure VM (D4s v5: 4 vCPU, 16GB RAM) — supports ~30 concurrent agents
 - Docker Compose with `docker-compose.prod.yml` overlay
 - Managed PostgreSQL or containerized with persistent disk
-- Traefik handles Let's Encrypt SSL automatically
+- Nginx in frontend container handles SSL termination (or add a reverse proxy like Caddy/nginx in front)

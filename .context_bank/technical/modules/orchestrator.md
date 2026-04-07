@@ -47,11 +47,11 @@ pub struct Orchestrator {
 | Method | What it does |
 |--------|-------------|
 | `create_agent(user_id, model, config)` | Atomic capacity check (`INSERT...SELECT WHERE count < max`) → create container → update DB |
-| `wake_agent(agent_id)` | Lock → start container → health check (5 retries, 2s) → update status |
+| `wake_agent(agent_id)` | Lock → start container → health check (150 retries, 3s interval, ~450s budget) → update status |
 | `sleep_agent(agent_id)` | Lock → stop container → update status |
 | `destroy_agent(agent_id)` | Lock → remove container → delete DB record (lock entry intentionally retained) |
 | `purge_stale_locks()` | Periodic cleanup: removes DashMap entries for agents no longer in DB |
-| `ensure_ready(agent_id)` | Running→return, Stopped→wake, Creating→error, Error→error |
+| `ensure_ready(agent_id)` | Running→return, Stopped→wake, Creating→error, Error→auto-recover if container healthy |
 | `get_agent_status(agent_id)` | Query DB |
 
 ### Locking
@@ -63,5 +63,5 @@ Every mutation acquires `locks.entry(agent_id).or_insert(Mutex)`. Prevents concu
 
 ## Extension
 - New runtime: implement `AgentRuntime`, wire in `main.rs`
-- Phase 2 (CRIU): `CriuRuntime` — checkpoint via `criu dump`, restore via `criu restore`
-- Phase 3 (Firecracker): `FirecrackerRuntime` — snapshot to S3, restore from snapshot
+- Phase 3 (Firecracker): `FirecrackerRuntime` — native VM snapshotting (~125ms restore), no CRIU needed
+- `start_agent` handles Docker 304 (already running) gracefully

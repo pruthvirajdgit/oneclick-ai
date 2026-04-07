@@ -92,8 +92,20 @@ Agent details.
 Delete agent and its container.
 
 ```json
+// Response 204 (no content)
+```
+
+---
+
+### POST /api/agents/:id/wake
+Wake a sleeping agent. Returns immediately — agent boots in background (~5-7 min on Docker).
+
+```json
 // Response 200
-{ "message": "Agent deleted" }
+{ "status": "waking", "chat_url": "/chat/uuid" }
+
+// Error 404
+{ "error": "Agent not found" }
 ```
 
 ---
@@ -101,7 +113,7 @@ Delete agent and its container.
 ## Chat
 
 ### WS /api/agents/:id/chat
-WebSocket connection for real-time chat.
+WebSocket connection for real-time chat with token streaming.
 
 **Connection**: `ws://localhost:8080/api/agents/:id/chat?token=<jwt>`
 
@@ -113,10 +125,11 @@ WebSocket connection for real-time chat.
 **Server → Client messages**:
 ```json
 // Status updates
-{ "type": "status", "message": "Agent waking up..." }
+{ "type": "status", "message": "Waking up agent..." }
 { "type": "status", "message": "Agent ready" }
+{ "type": "status", "message": "Thinking..." }
 
-// Response streaming
+// Token streaming (real-time, word-by-word)
 { "type": "chunk", "content": "I'll search for " }
 { "type": "chunk", "content": "flights to Bangalore..." }
 { "type": "done", "content": "I found 3 flights under ₹3,500..." }
@@ -125,6 +138,8 @@ WebSocket connection for real-time chat.
 { "type": "error", "message": "Rate limit exceeded. Resets at midnight UTC." }
 { "type": "error", "message": "Agent failed to start" }
 ```
+
+**Note**: The chat pipeline uses an SSE bridge inside agent containers (chat-bridge.js on port 3001). The backend parses SSE events and forwards tokens as WebSocket chunks. If the bridge returns 503 (gateway not ready), the backend retries up to 10 times.
 
 ---
 
