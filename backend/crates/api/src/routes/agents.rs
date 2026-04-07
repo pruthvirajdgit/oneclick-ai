@@ -19,6 +19,7 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list_agents).post(create_agent))
         .route("/{id}", get(get_agent).delete(delete_agent))
         .route("/{id}/wake", post(wake_agent))
+        .route("/{id}/sleep", post(sleep_agent))
 }
 
 /// `GET /api/agents` — List the authenticated user's agents.
@@ -105,7 +106,30 @@ async fn delete_agent(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/agents/:id/wake` — Wake an agent and return its OpenClaw chat UI URL.
+/// `POST /api/agents/:id/sleep` — Put an agent to sleep (snapshot VM, stop container).
+async fn sleep_agent(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    tracing::info!(user_id = %auth.0.sub, agent_id = %id, "Sleep agent requested");
+
+    let agent = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Agent {id} not found")))?;
+
+    if agent.user_id != auth.0.sub {
+        return Err(AppError::NotFound(format!("Agent {id} not found")));
+    }
+
+    let agent = state.orchestrator.sleep_agent(agent.id).await?;
+
+    tracing::info!(agent_id = %id, "Agent put to sleep");
+
+    Ok(Json(AgentResponse::from(agent)))
+}
 ///
 /// Blocks until the agent is healthy (up to ~450s). The frontend should show
 /// a loading state while this request is in flight, then open the returned

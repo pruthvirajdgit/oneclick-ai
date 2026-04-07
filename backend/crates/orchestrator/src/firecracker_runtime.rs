@@ -394,11 +394,103 @@ impl FirecrackerRuntime {
             _ => false,
         }
     }
+
+    /// Mount the rootfs copy and inject per-VM network and environment config.
+    async fn inject_rootfs_config(
+        &self,
+        agent: &Agent,
+        config: &Config,
+        alloc: &crate::tap_manager::TapAllocation,
+    ) -> AppResult<()> {
+        let agent_id = agent.id.to_string();
+        let rootfs = self.rootfs_path(&agent_id);
+        let mount_dir = format!("/tmp/fc-mount-{}", &agent_id[..8]);
+
+        // Mount the rootfs
+        let _ = Command::new("sudo").args(["mkdir", "-p", &mount_dir]).output().await;
+        let output = Command::new("sudo")
+            .args(["mount", "-o", "loop"])
+            .arg(rootfs.to_str().unwrap())
+            .arg(&mount_dir)
+            .output()
+            .await
+            .map_err(|e| AppError::Internal(format!("Mount rootfs: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Internal(format!("Mount rootfs failed: {stderr}")));
+        }
+
+        // Write network config
+        let fc_network = format!(
+            "GUEST_IP={}\nGUEST_CIDR={}/30\nGATEWAY_IP={}\n",
+            alloc.guest_ip, alloc.guest_ip, alloc.host_ip
+        );
+        let tmp_net = format!("/tmp/fc-net-{}", &agent_id[..8]);
+        tokio::fs::write(&tmp_net, &fc_network).await
+            .map_err(|e| AppError::Internal(format!("Write network tmp: {e}")))?;
+        let net_path = format!("{}/etc/fc-network", mount_dir);
+        let _ = Command::new("sudo").args(["cp", &tmp_net, &net_path]).output().await;
+        let _ = tokio::fs::remove_file(&tmp_net).await;
+
+        // Write environment config
+        // Use proxy model with openrouter/ prefix for backend LLM proxy
+        let proxy_model = if agent.model.starts_with("openrouter/") {
+            agent.model.clone()
+        } else {
+            format!("openrouter/{}", agent.model)
+        };
+
+        // Build the OpenRouter API key that encodes internal auth
+        let api_key = format!(
+            "{}|{}|{}",
+            config.internal_secret, agent.id, agent.user_id
+        );
+
+        // Backend proxy URL uses the host gateway IP
+        let backend_url = format!("http://{}:8080", alloc.host_ip);
+
+        let openclaw_env = format!(
+            r#"export AGENT_NAME="agent-{agent_short}"
+export AGENT_MODEL="{proxy_model}"
+export AGENT_PORT="3000"
+export OPENCLAW_GATEWAY_TOKEN="oneclick-internal"
+export NODE_OPTIONS="--max-old-space-size=1280"
+export OPENROUTER_BASE_URL="{backend_url}/internal/llm/v1"
+export OPENROUTER_API_KEY="{api_key}"
+export ONECLICK_BACKEND_URL="{backend_url}"
+export ONECLICK_AGENT_ID="{agent_id}"
+export ONECLICK_USER_ID="{user_id}"
+export ONECLICK_INTERNAL_SECRET="{internal_secret}"
+"#,
+            agent_short = &agent.id.to_string()[..8],
+            proxy_model = proxy_model,
+            backend_url = backend_url,
+            api_key = api_key,
+            agent_id = agent.id,
+            user_id = agent.user_id,
+            internal_secret = config.internal_secret,
+        );
+
+        let tmp_env = format!("/tmp/fc-env-{}", &agent_id[..8]);
+        tokio::fs::write(&tmp_env, &openclaw_env).await
+            .map_err(|e| AppError::Internal(format!("Write env tmp: {e}")))?;
+        let env_path = format!("{}/etc/openclaw-env", mount_dir);
+        let _ = Command::new("sudo").args(["cp", &tmp_env, &env_path]).output().await;
+        let _ = tokio::fs::remove_file(&tmp_env).await;
+
+        // Unmount
+        let _ = Command::new("sudo").args(["umount", &mount_dir]).output().await;
+        let _ = Command::new("sudo").args(["rm", "-rf", &mount_dir]).output().await;
+
+        info!(agent_id = %agent.id, "Rootfs config injected");
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl AgentRuntime for FirecrackerRuntime {
-    async fn create_agent(&self, agent: &Agent, _config: &Config) -> AppResult<String> {
+    async fn create_agent(&self, agent: &Agent, config: &Config) -> AppResult<String> {
         let agent_id = agent.id.to_string();
 
         info!(
@@ -434,6 +526,9 @@ impl AgentRuntime for FirecrackerRuntime {
             .allocate(&agent_id)
             .await
             .map_err(|e| AppError::Internal(e))?;
+
+        // Inject per-VM configuration into the rootfs copy
+        self.inject_rootfs_config(agent, config, &alloc).await?;
 
         info!(
             agent_id = %agent.id,
