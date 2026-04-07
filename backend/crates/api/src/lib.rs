@@ -23,6 +23,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/agents", routes::agents::routes())
         .route("/api/agents/{id}/chat", get(routes::chat::ws_handler))
+        .route("/api/agents/{id}/messages", get(routes::chat::get_messages))
         .nest("/api/schedules", routes::schedules::routes())
         .route("/api/usage", get(routes::usage::get_usage))
         .nest("/api/notifications", routes::notifications::routes())

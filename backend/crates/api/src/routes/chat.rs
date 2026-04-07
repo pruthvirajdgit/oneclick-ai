@@ -4,20 +4,30 @@
 //! in-container chat bridge (port 3001) → bridge connects to OpenClaw gateway
 //! via localhost WebSocket → SSE stream is parsed and forwarded token-by-token
 //! to the client WebSocket.
+//!
+//! All user and assistant messages are persisted in the `chat_messages` table
+//! so that conversation history survives page navigation and sleep/wake cycles.
+//! The last N messages are sent as context with each bridge request.
 
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
+use axum::Json;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use oneclick_shared::auth::validate_token;
 use oneclick_shared::errors::{AppError, AppResult};
+use oneclick_shared::models::chat_message::{ChatMessage, ChatMessageResponse};
 
+use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
+
+/// Maximum number of recent messages sent as context to the LLM.
+const MAX_CONTEXT_MESSAGES: i64 = 50;
 
 // ── Client ↔ Backend message types ─────────────────────────────────────
 
@@ -43,7 +53,7 @@ struct OutgoingMessage {
     message: Option<String>,
 }
 
-// ── Public handler ─────────────────────────────────────────────────────
+// ── Public handlers ────────────────────────────────────────────────────
 
 /// `GET /api/agents/{id}/chat?token=<jwt>`
 pub async fn ws_handler(
@@ -70,6 +80,36 @@ pub async fn ws_handler(
     tracing::info!(agent_id = %agent_id, user_id = %claims.sub, "WebSocket chat connection accepted");
 
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, agent_id, claims.sub)))
+}
+
+/// `GET /api/agents/{id}/messages` — Load persisted chat history.
+pub async fn get_messages(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    // Verify ownership
+    let agent = sqlx::query_as::<_, oneclick_shared::models::agent::Agent>(
+        "SELECT * FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("Agent {agent_id} not found")))?;
+
+    if agent.user_id != auth.0.sub {
+        return Err(AppError::NotFound(format!("Agent {agent_id} not found")));
+    }
+
+    let messages = sqlx::query_as::<_, ChatMessage>(
+        "SELECT * FROM chat_messages WHERE agent_id = $1 ORDER BY created_at ASC LIMIT 200",
+    )
+    .bind(agent_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let responses: Vec<ChatMessageResponse> = messages.into_iter().map(ChatMessageResponse::from).collect();
+    Ok(Json(responses))
 }
 
 // ── Client WebSocket loop ──────────────────────────────────────────────
@@ -131,10 +171,25 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
             continue;
         }
 
+        // Persist user message
+        if let Err(e) = save_message(&state, agent_id, "user", &incoming.content).await {
+            tracing::error!(agent_id = %agent_id, error = %e, "Failed to save user message");
+        }
+
+        // Load recent conversation history for context
+        let history = load_recent_messages(&state, agent_id).await;
+
         let _ = send_status(&mut socket, "Thinking...").await;
 
-        match bridge_chat(&container_name, &incoming.content, &mut socket).await {
-            Ok(_) => {}
+        match bridge_chat(&container_name, &incoming.content, &history, &mut socket).await {
+            Ok(response) => {
+                // Persist assistant response
+                if !response.is_empty() {
+                    if let Err(e) = save_message(&state, agent_id, "assistant", &response).await {
+                        tracing::error!(agent_id = %agent_id, error = %e, "Failed to save assistant message");
+                    }
+                }
+            }
             Err(e) => {
                 tracing::error!(error = %e, "Agent chat failed");
                 let _ = send_err(&mut socket, "Agent failed to respond").await;
@@ -153,26 +208,75 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
     tracing::info!(agent_id = %agent_id, user_id = %user_id, "WebSocket chat session ended");
 }
 
+// ── Message persistence ────────────────────────────────────────────────
+
+async fn save_message(
+    state: &AppState,
+    agent_id: Uuid,
+    role: &str,
+    content: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO chat_messages (agent_id, role, content) VALUES ($1, $2, $3)",
+    )
+    .bind(agent_id)
+    .bind(role)
+    .bind(content)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+async fn load_recent_messages(state: &AppState, agent_id: Uuid) -> Vec<(String, String)> {
+    let rows = sqlx::query_as::<_, ChatMessage>(
+        "SELECT * FROM (
+            SELECT * FROM chat_messages WHERE agent_id = $1 ORDER BY created_at DESC LIMIT $2
+        ) sub ORDER BY created_at ASC",
+    )
+    .bind(agent_id)
+    .bind(MAX_CONTEXT_MESSAGES)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .map(|m| (m.role, m.content))
+        .collect()
+}
+
 // ── Chat bridge HTTP call ──────────────────────────────────────────────
 
 /// POST to the in-container chat bridge and stream the SSE response back
 /// to the client WebSocket token-by-token.
 ///
+/// Sends conversation history as context so the LLM knows about prior messages.
 /// Retries up to 10 times with 3s delay if the bridge returns 503
 /// (gateway not connected yet — common right after agent wake).
 async fn bridge_chat(
     container_name: &str,
     message: &str,
+    history: &[(String, String)],
     client_ws: &mut WebSocket,
 ) -> Result<String, String> {
     let chat_url = format!("http://{}:3001/chat", container_name);
     let client = reqwest::Client::new();
 
+    // Build the payload with conversation history
+    let history_json: Vec<serde_json::Value> = history
+        .iter()
+        .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
+        .collect();
+
+    let payload = serde_json::json!({
+        "message": message,
+        "history": history_json,
+    });
+
     let mut last_err = String::new();
     for attempt in 1..=10 {
         let result = client
             .post(&chat_url)
-            .json(&serde_json::json!({ "message": message }))
+            .json(&payload)
             .timeout(Duration::from_secs(180))
             .send()
             .await;

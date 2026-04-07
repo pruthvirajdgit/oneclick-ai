@@ -9,6 +9,7 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Bot, Loader2, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 
 // ── Types ──────────────────────────────────────────────────────
 interface ChatMessage {
@@ -17,6 +18,13 @@ interface ChatMessage {
   content: string;
   timestamp: Date;
   isStreaming?: boolean;
+}
+
+interface PersistedMessage {
+  id: number;
+  role: string;
+  content: string;
+  created_at: string;
 }
 
 type ConnectionStatus = "connected" | "connecting" | "disconnected";
@@ -256,6 +264,31 @@ export default function ChatPage() {
       wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId]);
+
+  // Load persisted chat history on mount
+  useEffect(() => {
+    if (!agentId) return;
+    api
+      .get<PersistedMessage[]>(`/agents/${agentId}/messages`)
+      .then((history) => {
+        if (history.length > 0) {
+          const loaded: ChatMessage[] = history.map((m) => ({
+            id: `db-${m.id}`,
+            role: m.role === "user" ? "user" : "agent",
+            content: m.content,
+            timestamp: new Date(m.created_at),
+          }));
+          setMessages((prev) => {
+            // Only prepend if we haven't already loaded history
+            if (prev.some((p) => p.id.startsWith("db-"))) return prev;
+            return [...loaded, ...prev];
+          });
+        }
+      })
+      .catch((e) => {
+        console.warn("Failed to load chat history:", e);
+      });
   }, [agentId]);
 
   // Auto-focus input

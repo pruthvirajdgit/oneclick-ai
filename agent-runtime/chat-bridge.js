@@ -226,7 +226,7 @@ const server = http.createServer((req, res) => {
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       try {
-        const { message } = JSON.parse(body);
+        const { message, history } = JSON.parse(body);
         if (!message) {
           res.writeHead(400);
           res.end('{"error":"message required"}');
@@ -256,12 +256,22 @@ const server = http.createServer((req, res) => {
 
         pendingChats.set(reqId, { res, timeout });
 
+        // Build the message with conversation history as context
+        let fullMessage = message;
+        if (Array.isArray(history) && history.length > 0) {
+          const contextLines = history.map(m => {
+            const prefix = m.role === 'user' ? 'User' : 'Assistant';
+            return `${prefix}: ${m.content}`;
+          });
+          fullMessage = `[Conversation history for context — respond only to the latest message]\n${contextLines.join('\n')}\n\nUser: ${message}`;
+        }
+
         gatewayWs.send(JSON.stringify({
           type: 'req',
           id: reqId,
           method: 'chat.send',
           params: {
-            message,
+            message: fullMessage,
             sessionKey: 'main',
             idempotencyKey: reqId,
           },
