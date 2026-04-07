@@ -57,6 +57,48 @@ pub struct Config {
     /// Use "*" to allow any origin (dev only).
     #[serde(default = "default_cors_origins")]
     pub cors_allowed_origins: String,
+
+    // ── Firecracker runtime config ──────────────────────────────────────
+
+    /// Which agent runtime to use: "docker" or "firecracker"
+    #[serde(default = "default_agent_runtime")]
+    pub agent_runtime: String,
+
+    /// Path to the Firecracker-compatible kernel image
+    #[serde(default = "default_fc_kernel_path")]
+    pub fc_kernel_path: String,
+
+    /// Path to the template rootfs image (copied per-VM)
+    #[serde(default = "default_fc_rootfs_template")]
+    pub fc_rootfs_template: String,
+
+    /// Directory for VM snapshot storage
+    #[serde(default = "default_fc_snapshot_dir")]
+    pub fc_snapshot_dir: String,
+
+    /// Directory for per-VM rootfs copies and state
+    #[serde(default = "default_fc_vm_dir")]
+    pub fc_vm_dir: String,
+
+    /// Number of vCPUs per Firecracker VM
+    #[serde(default = "default_fc_vcpu_count")]
+    pub fc_vcpu_count: u32,
+
+    /// Memory size in MiB per Firecracker VM
+    #[serde(default = "default_fc_mem_size_mib")]
+    pub fc_mem_size_mib: u32,
+
+    /// TAP device name prefix (e.g. "tap" → tap0, tap1, ...)
+    #[serde(default = "default_fc_tap_prefix")]
+    pub fc_tap_prefix: String,
+
+    /// Number of TAP devices in the pool
+    #[serde(default = "default_fc_tap_count")]
+    pub fc_tap_count: u32,
+
+    /// Subnet prefix for TAP networking (e.g. "172.16")
+    #[serde(default = "default_fc_subnet_prefix")]
+    pub fc_subnet_prefix: String,
 }
 
 impl Config {
@@ -82,6 +124,16 @@ impl Config {
             docker_network: env_or("DOCKER_NETWORK", &default_docker_network()),
             internal_secret: env_required("INTERNAL_SECRET")?,
             cors_allowed_origins: env_or("CORS_ALLOWED_ORIGINS", &default_cors_origins()),
+            agent_runtime: env_or("AGENT_RUNTIME", &default_agent_runtime()),
+            fc_kernel_path: env_or("FC_KERNEL_PATH", &default_fc_kernel_path()),
+            fc_rootfs_template: env_or("FC_ROOTFS_TEMPLATE", &default_fc_rootfs_template()),
+            fc_snapshot_dir: env_or("FC_SNAPSHOT_DIR", &default_fc_snapshot_dir()),
+            fc_vm_dir: env_or("FC_VM_DIR", &default_fc_vm_dir()),
+            fc_vcpu_count: env_parse("FC_VCPU_COUNT", default_fc_vcpu_count()),
+            fc_mem_size_mib: env_parse("FC_MEM_SIZE_MIB", default_fc_mem_size_mib()),
+            fc_tap_prefix: env_or("FC_TAP_PREFIX", &default_fc_tap_prefix()),
+            fc_tap_count: env_parse("FC_TAP_COUNT", default_fc_tap_count()),
+            fc_subnet_prefix: env_or("FC_SUBNET_PREFIX", &default_fc_subnet_prefix()),
         };
 
         // Validate at least one LLM provider key is set.
@@ -119,3 +171,13 @@ fn default_daily_limit() -> u32 { 50 }
 fn default_idle_timeout() -> u32 { 15 }
 fn default_docker_network() -> String { "oneclick-net".into() }
 fn default_cors_origins() -> String { "*".into() }
+fn default_agent_runtime() -> String { "docker".into() }
+fn default_fc_kernel_path() -> String { "/opt/firecracker/vmlinux-6.1".into() }
+fn default_fc_rootfs_template() -> String { "/opt/firecracker/rootfs-openclaw.ext4".into() }
+fn default_fc_snapshot_dir() -> String { "/var/lib/oneclick/snapshots".into() }
+fn default_fc_vm_dir() -> String { "/var/lib/oneclick/vms".into() }
+fn default_fc_vcpu_count() -> u32 { 2 }
+fn default_fc_mem_size_mib() -> u32 { 1536 }
+fn default_fc_tap_prefix() -> String { "tap".into() }
+fn default_fc_tap_count() -> u32 { 16 }
+fn default_fc_subnet_prefix() -> String { "172.16".into() }

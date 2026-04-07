@@ -45,13 +45,20 @@ pub async fn proxy_agent_ui(
         .container_name
         .ok_or_else(|| AppError::Internal("Agent has no container name".into()))?;
 
+    // Get reachable address for this agent
+    let agent_address = state
+        .orchestrator
+        .get_agent_address(agent_id)
+        .await
+        .unwrap_or(container_name);
+
     // Strip the /agent-ui/{id} prefix to get the downstream path
     let prefix = format!("/agent-ui/{agent_id}");
     let downstream_path = path.strip_prefix(&prefix).unwrap_or("/");
     let downstream_path = if downstream_path.is_empty() { "/" } else { downstream_path };
 
     let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
-    let target_url = format!("http://{container_name}:3000{downstream_path}{query}");
+    let target_url = format!("http://{agent_address}:3000{downstream_path}{query}");
 
     let client = Client::new();
     let proxy_resp = client

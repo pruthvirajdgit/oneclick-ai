@@ -17,3 +17,4 @@ dashmap.workspace = true
 sqlx.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
+fctools.workspace = true

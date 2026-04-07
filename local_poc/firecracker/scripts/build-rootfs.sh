@@ -45,9 +45,9 @@ ip addr add 172.16.0.2/30 dev eth0 2>/dev/null
 ip link set eth0 up 2>/dev/null
 ip route add default via 172.16.0.1 2>/dev/null
 
-# Start HTTP server in background
-echo "Starting HTTP server on port 8080..."
-cd /var/www && python3 -m http.server 8080 --bind 0.0.0.0 &
+# Start HTTP server using busybox httpd (python3-minimal lacks http.server)
+echo "Starting busybox httpd on port 8080..."
+busybox httpd -f -p 8080 -h /var/www &
 
 echo "=== Firecracker VM boot complete ==="
 

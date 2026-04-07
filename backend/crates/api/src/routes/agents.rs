@@ -130,25 +130,28 @@ async fn wake_agent(
     // Blocks until healthy or returns error after retries exhausted.
     let agent = state.orchestrator.ensure_ready(agent.id).await?;
 
-    // Get the dynamically assigned host port for the OpenClaw UI
-    let host_port = state
-        .orchestrator
-        .get_host_port(agent.id)
-        .await?
-        .ok_or_else(|| AppError::Internal("No host port mapped for agent".into()))?;
+    // Get the dynamically assigned host port for the OpenClaw UI.
+    // For Firecracker VMs, there's no host port mapping — use the agent's
+    // TAP address directly via the reverse proxy path.
+    let host_port = state.orchestrator.get_host_port(agent.id).await?;
 
     // Build the chat URL. In GitHub Codespaces, ports are forwarded via
     // https://{codespace_name}-{port}.{domain}. Outside Codespaces, use localhost.
     // Append the gateway token so the OpenClaw UI auto-authenticates.
     let gw_token = "oneclick-internal";
-    let chat_url = match (
-        std::env::var("CODESPACE_NAME").ok().filter(|s| !s.is_empty()),
-        std::env::var("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN").ok().filter(|s| !s.is_empty()),
-    ) {
-        (Some(codespace), Some(domain)) => {
-            format!("https://{codespace}-{host_port}.{domain}/?token={gw_token}")
+    let chat_url = if let Some(port) = host_port {
+        match (
+            std::env::var("CODESPACE_NAME").ok().filter(|s| !s.is_empty()),
+            std::env::var("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN").ok().filter(|s| !s.is_empty()),
+        ) {
+            (Some(codespace), Some(domain)) => {
+                format!("https://{codespace}-{port}.{domain}/?token={gw_token}")
+            }
+            _ => format!("http://localhost:{port}/?token={gw_token}"),
         }
-        _ => format!("http://localhost:{host_port}/?token={gw_token}"),
+    } else {
+        // No host port (Firecracker) — use the reverse proxy route
+        format!("/agent-ui/{id}/?token={gw_token}")
     };
     tracing::info!(agent_id = %id, %chat_url, "Agent woken — chat URL ready");
 

@@ -56,6 +56,14 @@ async-trait = "0.1"
 # WebSocket client (for agent container communication)
 futures-util = "0.3"
 dashmap = "6"
+# Firecracker SDK
+fctools = { version = "0.7.0-alpha.1", features = [
+    "vm",
+    "unrestricted-vmm-executor",
+    "elevation-process-spawners",
+    "tokio-runtime",
+    "nix-syscall-backend",
+] }
 
 [workspace.package]
 version = "0.1.0"

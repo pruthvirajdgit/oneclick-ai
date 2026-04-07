@@ -46,6 +46,19 @@ pub trait AgentRuntime: Send + Sync {
 
     /// Get the host port mapped to container port 3000 (OpenClaw UI).
     async fn get_host_port(&self, container_id: &str) -> AppResult<Option<u16>>;
+
+    /// Get the reachable address (IP or hostname) for the agent.
+    ///
+    /// DockerRuntime returns the container's bridge IP; FirecrackerRuntime
+    /// returns the TAP guest IP.  Callers should use this instead of
+    /// `container_name` to build URLs when the backend runs on the host.
+    async fn get_agent_address(&self, container_id: &str) -> AppResult<String>;
+
+    /// Generate the container/VM name for a new agent.
+    fn agent_name(&self, user_id: &uuid::Uuid, agent_id: &uuid::Uuid) -> String;
+
+    /// Health check budget: (max_retries, interval between retries).
+    fn health_check_budget(&self) -> (u32, std::time::Duration);
 }
 
 /// Docker-based agent runtime using the bollard client.
@@ -215,7 +228,7 @@ impl AgentRuntime for DockerRuntime {
         };
 
         let options = CreateContainerOptions {
-            name: name.clone(),
+            name: name.to_string(),
             platform: None,
         };
 
@@ -361,16 +374,18 @@ impl AgentRuntime for DockerRuntime {
             }
         }
 
-        // Direct HTTP probe to the container's gateway port on the Docker network.
+        // Direct HTTP probe to the container's IP on the Docker network.
         // This catches readiness faster than Docker's HEALTHCHECK which has a
         // start-period delay before it begins probing.
-        let container_name = inspect
-            .name
-            .as_deref()
-            .map(|n| n.trim_start_matches('/'))
-            .unwrap_or(container_id);
+        let addr = self.get_agent_address(container_id).await.unwrap_or_else(|_| {
+            inspect
+                .name
+                .as_deref()
+                .map(|n| n.trim_start_matches('/').to_string())
+                .unwrap_or_else(|| container_id.to_string())
+        });
 
-        let probe_url = format!("http://{}:3000/", container_name);
+        let probe_url = format!("http://{}:3000/", addr);
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
             .build()
@@ -405,6 +420,49 @@ impl AgentRuntime for DockerRuntime {
             .and_then(|p| p.parse::<u16>().ok());
 
         Ok(port)
+    }
+
+    async fn get_agent_address(&self, container_id: &str) -> AppResult<String> {
+        let inspect = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!("Container inspect failed: {e}"))
+            })?;
+
+        // Try to get the container's IP on any attached network.
+        if let Some(networks) = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.networks.as_ref())
+        {
+            for (_name, endpoint) in networks {
+                if let Some(ip) = &endpoint.ip_address {
+                    if !ip.is_empty() {
+                        return Ok(ip.clone());
+                    }
+                }
+            }
+        }
+
+        // Fallback: use the container name (works if Docker DNS is available)
+        let name = inspect
+            .name
+            .as_deref()
+            .map(|n| n.trim_start_matches('/').to_string())
+            .unwrap_or_else(|| container_id.to_string());
+
+        Ok(name)
+    }
+
+    fn agent_name(&self, user_id: &uuid::Uuid, agent_id: &uuid::Uuid) -> String {
+        DockerRuntime::container_name(user_id, agent_id)
+    }
+
+    fn health_check_budget(&self) -> (u32, std::time::Duration) {
+        // OpenClaw gateway takes 3-7 min to boot: 150 × 3s = 450s
+        (150, std::time::Duration::from_secs(3))
     }
 }
 
