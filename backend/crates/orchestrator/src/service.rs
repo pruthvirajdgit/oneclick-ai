@@ -20,9 +20,9 @@ use oneclick_shared::models::agent::{Agent, AgentStatus};
 use crate::runtime::{AgentRuntime, DockerRuntime};
 
 /// Maximum number of health-check attempts after waking an agent.
-/// OpenClaw gateway can take 3-5 minutes in resource-constrained environments
-/// (Codespaces, small VMs). 100 × 3s = 300s (5 min) budget.
-const HEALTH_CHECK_RETRIES: u32 = 100;
+/// OpenClaw gateway can take 3-7 minutes in resource-constrained environments
+/// (WSL2, Codespaces, small VMs). 150 × 3s = 450s (7.5 min) budget.
+const HEALTH_CHECK_RETRIES: u32 = 150;
 
 /// Delay between health-check attempts.
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(3);
@@ -248,14 +248,30 @@ impl Orchestrator {
     /// Ensure the agent is ready to serve requests.
     ///
     /// - `Running` -> return immediately.
-    /// - `Stopped` / `Error` -> wake the agent and return.
+    /// - `Stopped` -> wake the agent and return.
+    /// - `Error` -> check if container is actually healthy (recovery path),
+    ///              otherwise re-wake from scratch.
     /// - `Creating` -> return an unavailable error (caller should retry).
     pub async fn ensure_ready(&self, agent_id: Uuid) -> AppResult<Agent> {
         let agent = self.get_agent(agent_id).await?;
 
         match agent.status {
             AgentStatus::Running => Ok(agent),
-            AgentStatus::Stopped | AgentStatus::Error => self.wake_agent(agent_id).await,
+            AgentStatus::Stopped => self.wake_agent(agent_id).await,
+            AgentStatus::Error => {
+                // Recovery path: the container may still be running and healthy
+                // even though the DB says "error" (e.g., health check timed out
+                // during initial boot but the gateway eventually started).
+                if let Some(container_id) = agent.container_id.as_deref() {
+                    if self.runtime.health_check(container_id).await.unwrap_or(false) {
+                        info!(agent_id = %agent_id, "Agent in error state but container healthy — recovering");
+                        return self.update_status(agent_id, AgentStatus::Running).await;
+                    }
+                }
+                // Container not healthy — do a full wake cycle
+                self.update_status(agent_id, AgentStatus::Stopped).await?;
+                self.wake_agent(agent_id).await
+            }
             AgentStatus::Creating => Err(AppError::AgentUnavailable(
                 "Agent is still being created".into(),
             )),

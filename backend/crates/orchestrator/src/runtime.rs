@@ -240,15 +240,22 @@ impl AgentRuntime for DockerRuntime {
     async fn start_agent(&self, container_id: &str) -> AppResult<()> {
         info!(container_id, "Starting agent container");
 
-        self.docker
+        match self.docker
             .start_container(container_id, None::<StartContainerOptions<String>>)
             .await
-            .map_err(|e| {
+        {
+            Ok(()) => {
+                info!(container_id, "Agent container started");
+            }
+            Err(e) if e.to_string().contains("304") || e.to_string().contains("already started") => {
+                info!(container_id, "Container already running");
+            }
+            Err(e) => {
                 error!(container_id, error = %e, "Failed to start container");
-                AppError::AgentUnavailable(format!("Container start failed: {e}"))
-            })?;
+                return Err(AppError::AgentUnavailable(format!("Container start failed: {e}")));
+            }
+        }
 
-        info!(container_id, "Agent container started");
         Ok(())
     }
 
