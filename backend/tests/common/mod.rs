@@ -57,6 +57,10 @@ impl AgentRuntime for MockRuntime {
     async fn health_check(&self, _container_id: &str) -> AppResult<bool> {
         Ok(true)
     }
+
+    async fn get_host_port(&self, _container_id: &str) -> AppResult<Option<u16>> {
+        Ok(Some(39999))
+    }
 }
 
 // ---------------------------------------------------------------------------

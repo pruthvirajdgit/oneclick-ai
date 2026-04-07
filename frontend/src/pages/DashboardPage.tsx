@@ -36,6 +36,7 @@ interface Agent {
   model: string;
   last_active: string | null;
   created_at: string;
+  chat_url: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -66,8 +67,6 @@ const REFRESH_INTERVAL = 30_000;
 
 // ── Component ──────────────────────────────────────────────────
 export default function DashboardPage() {
-  const navigate = useNavigate();
-
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -75,6 +74,7 @@ export default function DashboardPage() {
   const [model, setModel] = useState("groq/llama-3.3-70b-versatile");
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const navigate = useNavigate();
 
   // ── Fetch agents ───────────────────────────────────────────
   const fetchAgents = useCallback(async (showLoading = false) => {
@@ -131,6 +131,11 @@ export default function DashboardPage() {
     } finally {
       setDeleting(false);
     }
+  }
+
+  // ── Open in-app chat page ───────────────────────────────────
+  function handleChat(agent: Agent) {
+    navigate(`/chat/${agent.id}`);
   }
 
   // ── Loading skeleton ───────────────────────────────────────
@@ -244,7 +249,7 @@ export default function DashboardPage() {
                   <Button
                     size="sm"
                     className="flex-1 bg-indigo-600 text-white hover:bg-indigo-700"
-                    onClick={() => navigate(`/chat/${agent.id}`)}
+                    onClick={() => handleChat(agent)}
                   >
                     <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
                     Chat

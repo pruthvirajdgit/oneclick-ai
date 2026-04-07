@@ -12,7 +12,7 @@ use bollard::container::{
 };
 use bollard::container::NetworkingConfig;
 use bollard::models::{
-    EndpointSettings, HostConfig, RestartPolicy, RestartPolicyNameEnum,
+    EndpointSettings, HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::Docker;
 use oneclick_shared::config::Config;
@@ -43,6 +43,9 @@ pub trait AgentRuntime: Send + Sync {
     ///
     /// Returns `true` if the agent responded successfully, `false` otherwise.
     async fn health_check(&self, container_id: &str) -> AppResult<bool>;
+
+    /// Get the host port mapped to container port 3000 (OpenClaw UI).
+    async fn get_host_port(&self, container_id: &str) -> AppResult<Option<u16>>;
 }
 
 /// Docker-based agent runtime using the bollard client.
@@ -167,6 +170,17 @@ impl AgentRuntime for DockerRuntime {
             },
         );
 
+        // Publish container port 3000 (OpenClaw gateway UI) on a random host port
+        // so the browser can connect directly with full WebSocket support.
+        let mut port_bindings = HashMap::new();
+        port_bindings.insert(
+            "3000/tcp".to_string(),
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_string()),
+                host_port: Some("0".to_string()), // 0 = random available port
+            }]),
+        );
+
         let host_config = HostConfig {
             memory: Some(memory),
             nano_cpus: Some(nano_cpus),
@@ -178,8 +192,13 @@ impl AgentRuntime for DockerRuntime {
             binds: Some(vec![
                 format!("oneclick-agent-{name}:/home/node/.openclaw"),
             ]),
+            port_bindings: Some(port_bindings),
             ..Default::default()
         };
+
+        // Expose port 3000 in the container config
+        let mut exposed_ports = HashMap::new();
+        exposed_ports.insert("3000/tcp".to_string(), HashMap::new());
 
         let container_config = ContainerConfig {
             image: Some(config.agent_image.clone()),
@@ -189,6 +208,7 @@ impl AgentRuntime for DockerRuntime {
             networking_config: Some(NetworkingConfig {
                 endpoints_config: endpoints,
             }),
+            exposed_ports: Some(exposed_ports),
             // OpenClaw requires a TTY to run the gateway process
             tty: Some(true),
             ..Default::default()
@@ -220,15 +240,22 @@ impl AgentRuntime for DockerRuntime {
     async fn start_agent(&self, container_id: &str) -> AppResult<()> {
         info!(container_id, "Starting agent container");
 
-        self.docker
+        match self.docker
             .start_container(container_id, None::<StartContainerOptions<String>>)
             .await
-            .map_err(|e| {
+        {
+            Ok(()) => {
+                info!(container_id, "Agent container started");
+            }
+            Err(e) if e.to_string().contains("304") || e.to_string().contains("already started") => {
+                info!(container_id, "Container already running");
+            }
+            Err(e) => {
                 error!(container_id, error = %e, "Failed to start container");
-                AppError::AgentUnavailable(format!("Container start failed: {e}"))
-            })?;
+                return Err(AppError::AgentUnavailable(format!("Container start failed: {e}")));
+            }
+        }
 
-        info!(container_id, "Agent container started");
         Ok(())
     }
 
@@ -322,26 +349,62 @@ impl AgentRuntime for DockerRuntime {
             return Ok(false);
         }
 
-        // If Docker health check is configured, use its status
+        // If Docker health check reports "healthy", trust it immediately.
         if let Some(health) = inspect.state.as_ref().and_then(|s| s.health.as_ref()) {
             if let Some(status) = &health.status {
                 let status_str: &str = status.as_ref();
-                let healthy = status_str == "healthy";
-                if status_str != "starting" {
-                    info!(container_id, status = status_str, "Docker health status");
+                if status_str == "healthy" {
+                    return Ok(true);
                 }
-                return Ok(healthy);
+                // For "starting" or "unhealthy", fall through to direct HTTP probe
+                // rather than trusting Docker's delayed HEALTHCHECK timing.
             }
         }
 
-        // Fallback: no Docker HEALTHCHECK configured.
-        // Warn loudly — production agent images should define HEALTHCHECK.
-        warn!(
-            container_id,
-            "Container running but no HEALTHCHECK configured — assuming healthy. \
-             Define a HEALTHCHECK in the agent Dockerfile for reliable readiness detection."
-        );
-        Ok(true)
+        // Direct HTTP probe to the container's gateway port on the Docker network.
+        // This catches readiness faster than Docker's HEALTHCHECK which has a
+        // start-period delay before it begins probing.
+        let container_name = inspect
+            .name
+            .as_deref()
+            .map(|n| n.trim_start_matches('/'))
+            .unwrap_or(container_id);
+
+        let probe_url = format!("http://{}:3000/", container_name);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
+
+        match client.get(&probe_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!(container_id, "Direct HTTP probe succeeded");
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    async fn get_host_port(&self, container_id: &str) -> AppResult<Option<u16>> {
+        let inspect = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!("Container inspect failed: {e}"))
+            })?;
+
+        let port = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.ports.as_ref())
+            .and_then(|ports| ports.get("3000/tcp"))
+            .and_then(|bindings| bindings.as_ref())
+            .and_then(|bindings| bindings.first())
+            .and_then(|b| b.host_port.as_ref())
+            .and_then(|p| p.parse::<u16>().ok());
+
+        Ok(port)
     }
 }
 

@@ -1,47 +1,31 @@
 //! WebSocket chat handler for real-time agent conversations.
 //!
-//! Flow: client connects → JWT validated → agent woken → message sent to
-//! agent container via `openclaw agent --json` CLI and response streamed back.
-//!
-//! OpenClaw agents use a complex WebSocket gateway protocol with device pairing.
-//! Instead of implementing that protocol, we use the `openclaw agent` CLI
-//! command via Docker exec, which handles authentication internally.
+//! Flow: client connects → JWT validated → agent woken → backend POSTs to the
+//! in-container chat bridge (port 3001) → bridge connects to OpenClaw gateway
+//! via localhost WebSocket → SSE stream is parsed and forwarded token-by-token
+//! to the client WebSocket.
 
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
-use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::Docker;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use oneclick_shared::auth::validate_token;
 use oneclick_shared::errors::{AppError, AppResult};
-use oneclick_shared::models::agent::Agent;
 
 use crate::state::AppState;
 
-/// Query parameters for the WebSocket chat endpoint.
-///
-/// # Security Note: WebSocket Authentication via Query Parameters
-///
-/// The browser `WebSocket` API does not support setting custom HTTP headers on the
-/// handshake request, so we pass the JWT as a `?token=` query parameter. This
-/// means the token may appear in access logs, proxy logs, and browser history.
-/// Mitigations applied:
-/// - `TraceLayer` logs only the URI path (query string redacted).
-/// - Tokens should be short-lived; consider a one-time WS ticket exchange or
-///   `Sec-WebSocket-Protocol` auth in a future iteration.
+// ── Client ↔ Backend message types ─────────────────────────────────────
+
 #[derive(Deserialize)]
 pub struct ChatQuery {
-    /// JWT token used for authentication (WebSocket cannot send headers).
     token: String,
 }
 
-/// Message sent from the client over the WebSocket.
 #[derive(Deserialize)]
 struct IncomingMessage {
     #[serde(rename = "type")]
@@ -49,7 +33,6 @@ struct IncomingMessage {
     content: String,
 }
 
-/// Message sent from the server to the client over the WebSocket.
 #[derive(Serialize)]
 struct OutgoingMessage {
     #[serde(rename = "type")]
@@ -60,13 +43,8 @@ struct OutgoingMessage {
     message: Option<String>,
 }
 
-/// WebSocket chat endpoint handler.
-///
-/// Authenticates via `?token=<jwt>` query parameter, verifies agent ownership,
-/// then upgrades the connection to a WebSocket for real-time messaging.
-///
-/// # Route
-///
+// ── Public handler ─────────────────────────────────────────────────────
+
 /// `GET /api/agents/{id}/chat?token=<jwt>`
 pub async fn ws_handler(
     State(state): State<AppState>,
@@ -74,132 +52,77 @@ pub async fn ws_handler(
     Query(query): Query<ChatQuery>,
     ws: WebSocketUpgrade,
 ) -> AppResult<impl IntoResponse> {
-    // Validate JWT from query parameter.
     let claims = validate_token(&query.token, &state.config.jwt_secret)
         .map_err(|_| AppError::Unauthorized)?;
 
-    // Verify agent exists and belongs to the authenticated user.
-    let agent = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
-        .bind(agent_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Agent {agent_id} not found")))?;
+    let agent = sqlx::query_as::<_, oneclick_shared::models::agent::Agent>(
+        "SELECT * FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("Agent {agent_id} not found")))?;
 
     if agent.user_id != claims.sub {
         return Err(AppError::NotFound(format!("Agent {agent_id} not found")));
     }
 
-    tracing::info!(
-        agent_id = %agent_id,
-        user_id = %claims.sub,
-        "WebSocket chat connection accepted"
-    );
+    tracing::info!(agent_id = %agent_id, user_id = %claims.sub, "WebSocket chat connection accepted");
 
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, agent_id, claims.sub)))
 }
 
-/// Core WebSocket loop: wake agent, relay messages via CLI, stream responses.
+// ── Client WebSocket loop ──────────────────────────────────────────────
+
 async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, user_id: Uuid) {
-    // --- Wake agent if needed ---
-    if let Err(e) = send_json(
-        &mut socket,
-        &OutgoingMessage {
-            msg_type: "status".into(),
-            content: None,
-            message: Some("Agent waking up...".into()),
-        },
-    )
-    .await
-    {
-        tracing::error!(error = %e, "Failed to send wake status");
+    // Wake agent
+    if send_status(&mut socket, "Agent waking up...").await.is_err() {
         return;
     }
 
     let agent = match state.orchestrator.ensure_ready(agent_id).await {
-        Ok(agent) => agent,
+        Ok(a) => a,
         Err(e) => {
             tracing::error!(agent_id = %agent_id, error = %e, "Failed to wake agent");
-            let _ = send_json(
-                &mut socket,
-                &OutgoingMessage {
-                    msg_type: "error".into(),
-                    content: None,
-                    message: Some("Failed to wake agent".into()),
-                },
-            )
-            .await;
+            let _ = send_err(&mut socket, "Failed to wake agent").await;
             return;
         }
     };
 
-    if let Err(e) = send_json(
-        &mut socket,
-        &OutgoingMessage {
-            msg_type: "status".into(),
-            content: None,
-            message: Some("Agent ready".into()),
-        },
-    )
-    .await
-    {
-        tracing::error!(error = %e, "Failed to send ready status");
+    if send_status(&mut socket, "Agent ready").await.is_err() {
         return;
     }
 
-    let container_id = match &agent.container_id {
-        Some(id) => id.clone(),
+    let container_name = match &agent.container_name {
+        Some(n) => n.clone(),
         None => {
-            tracing::error!(agent_id = %agent_id, "Agent has no container ID");
-            let _ = send_json(
-                &mut socket,
-                &OutgoingMessage {
-                    msg_type: "error".into(),
-                    content: None,
-                    message: Some("Agent container not available".into()),
-                },
-            )
-            .await;
+            tracing::error!(agent_id = %agent_id, "Agent has no container name");
+            let _ = send_err(&mut socket, "Agent container not available").await;
             return;
         }
     };
 
-    // --- Message loop ---
+    // Message loop
     while let Some(msg_result) = socket.recv().await {
         let msg = match msg_result {
-            Ok(msg) => msg,
+            Ok(m) => m,
             Err(e) => {
-                tracing::info!(
-                    agent_id = %agent_id,
-                    user_id = %user_id,
-                    error = %e,
-                    "WebSocket connection closed"
-                );
+                tracing::info!(agent_id = %agent_id, user_id = %user_id, error = %e, "WebSocket closed");
                 break;
             }
         };
 
         let text = match msg {
             Message::Text(t) => t,
-            Message::Close(_) => {
-                tracing::info!(agent_id = %agent_id, user_id = %user_id, "Client sent close frame");
-                break;
-            }
+            Message::Close(_) => break,
             _ => continue,
         };
 
         let incoming: IncomingMessage = match serde_json::from_str(&text) {
             Ok(m) => m,
             Err(e) => {
-                tracing::warn!(error = %e, "Invalid message format from client");
-                let _ = send_json(
-                    &mut socket,
-                    &OutgoingMessage {
-                        msg_type: "error".into(),
-                        content: None,
-                        message: Some("Invalid message format".into()),
-                    },
-                )
-                .await;
+                tracing::warn!(error = %e, "Invalid message format");
+                let _ = send_err(&mut socket, "Invalid message format").await;
                 continue;
             }
         };
@@ -208,60 +131,16 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
             continue;
         }
 
-        // Send message to agent via `openclaw agent` CLI (docker exec).
-        // This handles the full OpenClaw gateway protocol internally.
-        let _ = send_json(
-            &mut socket,
-            &OutgoingMessage {
-                msg_type: "status".into(),
-                content: None,
-                message: Some("Thinking...".into()),
-            },
-        )
-        .await;
+        let _ = send_status(&mut socket, "Thinking...").await;
 
-        match exec_agent_message(&state.docker, &container_id, &incoming.content).await {
-            Ok(response) => {
-                // Simulate streaming by sending the response word-by-word.
-                // True token-level streaming requires agent-level changes (Phase 3).
-                let words: Vec<&str> = response.split_inclusive(char::is_whitespace).collect();
-                for word in &words {
-                    let _ = send_json(
-                        &mut socket,
-                        &OutgoingMessage {
-                            msg_type: "stream".into(),
-                            content: Some((*word).to_string()),
-                            message: None,
-                        },
-                    )
-                    .await;
-                    tokio::time::sleep(Duration::from_millis(30)).await;
-                }
-                let _ = send_json(
-                    &mut socket,
-                    &OutgoingMessage {
-                        msg_type: "done".into(),
-                        content: Some(response),
-                        message: None,
-                    },
-                )
-                .await;
-            }
+        match bridge_chat(&container_name, &incoming.content, &mut socket).await {
+            Ok(_) => {}
             Err(e) => {
-                tracing::error!(error = %e, "Agent message failed");
-                let _ = send_json(
-                    &mut socket,
-                    &OutgoingMessage {
-                        msg_type: "error".into(),
-                        content: None,
-                        message: Some("Agent failed to respond".into()),
-                    },
-                )
-                .await;
+                tracing::error!(error = %e, "Agent chat failed");
+                let _ = send_err(&mut socket, "Agent failed to respond").await;
             }
         }
 
-        // Update last_active timestamp after each exchange.
         if let Err(e) = sqlx::query("UPDATE agents SET last_active = NOW() WHERE id = $1")
             .bind(agent_id)
             .execute(&state.db)
@@ -271,114 +150,189 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
         }
     }
 
-    tracing::info!(
-        agent_id = %agent_id,
-        user_id = %user_id,
-        "WebSocket chat session ended"
-    );
+    tracing::info!(agent_id = %agent_id, user_id = %user_id, "WebSocket chat session ended");
 }
 
-/// Execute a message on the agent container via `openclaw agent --json` CLI.
+// ── Chat bridge HTTP call ──────────────────────────────────────────────
+
+/// POST to the in-container chat bridge and stream the SSE response back
+/// to the client WebSocket token-by-token.
 ///
-/// Uses Docker exec to run the OpenClaw CLI inside the agent container, which
-/// handles the gateway WebSocket protocol, device authentication, and session
-/// management internally.
-async fn exec_agent_message(docker: &Docker, container_id: &str, message: &str) -> Result<String, String> {
-    let exec = docker
-        .create_exec(
-            container_id,
-            CreateExecOptions {
-                cmd: Some(vec![
-                    "openclaw",
-                    "agent",
-                    "--agent", "main",
-                    "--message", message,
-                    "--json",
-                    "--timeout", "120",
-                ]),
-                env: Some(vec!["HOME=/home/node"]),
-                attach_stdout: Some(true),
-                attach_stderr: Some(true),
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|e| format!("Docker exec create failed: {e}"))?;
+/// Retries up to 10 times with 3s delay if the bridge returns 503
+/// (gateway not connected yet — common right after agent wake).
+async fn bridge_chat(
+    container_name: &str,
+    message: &str,
+    client_ws: &mut WebSocket,
+) -> Result<String, String> {
+    let chat_url = format!("http://{}:3001/chat", container_name);
+    let client = reqwest::Client::new();
 
-    let output = docker
-        .start_exec(&exec.id, None)
-        .await
-        .map_err(|e| format!("Docker exec start failed: {e}"))?;
+    let mut last_err = String::new();
+    for attempt in 1..=10 {
+        let result = client
+            .post(&chat_url)
+            .json(&serde_json::json!({ "message": message }))
+            .timeout(Duration::from_secs(180))
+            .send()
+            .await;
 
-    let mut stdout = String::new();
-    if let StartExecResults::Attached { mut output, .. } = output {
-        let stream_result = tokio::time::timeout(Duration::from_secs(130), async {
-            while let Some(chunk) = output.next().await {
-                match chunk {
-                    Ok(bollard::container::LogOutput::StdOut { message }) => {
-                        stdout.push_str(&String::from_utf8_lossy(&message));
-                    }
-                    Ok(bollard::container::LogOutput::StdErr { message }) => {
-                        let stderr = String::from_utf8_lossy(&message);
-                        tracing::debug!(stderr = %stderr, "Agent stderr");
-                    }
-                    Err(e) => {
-                        return Err(format!("Docker exec stream error: {e}"));
-                    }
-                    _ => {}
-                }
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                // Success — proceed to stream SSE below
+                return stream_bridge_response(resp, client_ws).await;
             }
-            Ok(())
-        })
-        .await;
-
-        match stream_result {
-            Err(_elapsed) => return Err("Docker exec timed out".into()),
-            Ok(Err(e)) => return Err(e),
-            Ok(Ok(())) => {}
-        }
-    }
-
-    // Parse the JSON output from `openclaw agent --json`
-    // The response has a `payloads` array with text responses
-    tracing::debug!(stdout_len = stdout.len(), stdout_preview = %&stdout[..stdout.floor_char_boundary(500)], "Agent stdout");
-    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-        // Check if the agent reported an error (stopReason: "error")
-        let is_error = data
-            .pointer("/meta/stopReason")
-            .and_then(|v| v.as_str())
-            == Some("error");
-
-        if let Some(payloads) = data.get("payloads").and_then(|p| p.as_array()) {
-            let texts: Vec<&str> = payloads
-                .iter()
-                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                .collect();
-            if !texts.is_empty() {
-                let response = texts.join("\n");
-                if is_error {
-                    tracing::warn!(response = %response, "Agent returned an error response");
-                    return Err(format!("Agent error: {}", response));
-                }
-                return Ok(response);
+            Ok(resp) if resp.status().as_u16() == 503 && attempt < 10 => {
+                let body = resp.text().await.unwrap_or_default();
+                tracing::info!(
+                    attempt,
+                    container = container_name,
+                    "Bridge not ready (503: {body}), retrying in 3s..."
+                );
+                let _ =
+                    send_status(client_ws, &format!("Connecting to agent (attempt {}/10)...", attempt)).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                last_err = format!("Bridge 503: {body}");
+            }
+            Ok(resp) => {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("Bridge error: {body}"));
+            }
+            Err(e) if attempt < 10 => {
+                tracing::info!(
+                    attempt,
+                    container = container_name,
+                    error = %e,
+                    "Bridge request failed, retrying in 3s..."
+                );
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                last_err = format!("Bridge request failed: {e}");
+            }
+            Err(e) => {
+                return Err(format!("Bridge request failed after retries: {e}"));
             }
         }
     }
 
-    // If we couldn't parse JSON, return a generic error to avoid leaking
-    // internal agent logs or error details to the client.
-    if !stdout.trim().is_empty() {
-        tracing::warn!(stdout_preview = %&stdout[..stdout.floor_char_boundary(500)], "Agent returned non-JSON output");
-    }
-    tracing::error!("Agent message failed");
-    Err("Agent returned an unexpected response".into())
+    Err(format!("Bridge not ready after 10 attempts: {last_err}"))
 }
 
-/// Serialize and send a JSON message over the WebSocket.
-async fn send_json(
-    socket: &mut WebSocket,
-    msg: &OutgoingMessage,
-) -> Result<(), axum::Error> {
+/// Stream SSE response from bridge and forward tokens to client WebSocket.
+async fn stream_bridge_response(
+    response: reqwest::Response,
+    client_ws: &mut WebSocket,
+) -> Result<String, String> {
+
+    // Stream SSE events from the response body
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut final_text = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("Stream error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+        // Process complete SSE events (delimited by \n\n)
+        while let Some(pos) = buffer.find("\n\n") {
+            let event = buffer[..pos].to_string();
+            buffer = buffer[pos + 2..].to_string();
+
+            for line in event.lines() {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" {
+                        return Ok(final_text);
+                    }
+
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                        let event_type = parsed
+                            .get("type")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("");
+                        let content = parsed
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+                        let msg_text = parsed
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("");
+
+                        match event_type {
+                            "stream" => {
+                                if !content.is_empty() {
+                                    let _ = send_json(
+                                        client_ws,
+                                        &OutgoingMessage {
+                                            msg_type: "stream".into(),
+                                            content: Some(content.to_string()),
+                                            message: None,
+                                        },
+                                    )
+                                    .await;
+                                }
+                            }
+                            "done" => {
+                                final_text = content.to_string();
+                                let _ = send_json(
+                                    client_ws,
+                                    &OutgoingMessage {
+                                        msg_type: "done".into(),
+                                        content: Some(final_text.clone()),
+                                        message: None,
+                                    },
+                                )
+                                .await;
+                            }
+                            "error" => {
+                                let err = if !msg_text.is_empty() {
+                                    msg_text
+                                } else {
+                                    content
+                                };
+                                return Err(format!("Agent error: {err}"));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if final_text.is_empty() {
+        Err("Bridge stream ended without final response".to_string())
+    } else {
+        Ok(final_text)
+    }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+async fn send_json(socket: &mut WebSocket, msg: &OutgoingMessage) -> Result<(), axum::Error> {
     let text = serde_json::to_string(msg).expect("OutgoingMessage is always serializable");
     socket.send(Message::Text(text.into())).await
+}
+
+async fn send_status(socket: &mut WebSocket, msg: &str) -> Result<(), axum::Error> {
+    send_json(
+        socket,
+        &OutgoingMessage {
+            msg_type: "status".into(),
+            content: None,
+            message: Some(msg.into()),
+        },
+    )
+    .await
+}
+
+async fn send_err(socket: &mut WebSocket, msg: &str) -> Result<(), axum::Error> {
+    send_json(
+        socket,
+        &OutgoingMessage {
+            msg_type: "error".into(),
+            content: None,
+            message: Some(msg.into()),
+        },
+    )
+    .await
 }

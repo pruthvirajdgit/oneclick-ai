@@ -20,8 +20,9 @@ use oneclick_shared::models::agent::{Agent, AgentStatus};
 use crate::runtime::{AgentRuntime, DockerRuntime};
 
 /// Maximum number of health-check attempts after waking an agent.
-/// OpenClaw takes ~60-90s to start; 45 × 3s = 135s budget.
-const HEALTH_CHECK_RETRIES: u32 = 45;
+/// OpenClaw gateway can take 3-7 minutes in resource-constrained environments
+/// (WSL2, Codespaces, small VMs). 150 × 3s = 450s (7.5 min) budget.
+const HEALTH_CHECK_RETRIES: u32 = 150;
 
 /// Delay between health-check attempts.
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(3);
@@ -248,21 +249,43 @@ impl Orchestrator {
     ///
     /// - `Running` -> return immediately.
     /// - `Stopped` -> wake the agent and return.
+    /// - `Error` -> check if container is actually healthy (recovery path),
+    ///              otherwise re-wake from scratch.
     /// - `Creating` -> return an unavailable error (caller should retry).
-    /// - `Error` -> return an error.
     pub async fn ensure_ready(&self, agent_id: Uuid) -> AppResult<Agent> {
         let agent = self.get_agent(agent_id).await?;
 
         match agent.status {
             AgentStatus::Running => Ok(agent),
             AgentStatus::Stopped => self.wake_agent(agent_id).await,
+            AgentStatus::Error => {
+                // Recovery path: the container may still be running and healthy
+                // even though the DB says "error" (e.g., health check timed out
+                // during initial boot but the gateway eventually started).
+                if let Some(container_id) = agent.container_id.as_deref() {
+                    if self.runtime.health_check(container_id).await.unwrap_or(false) {
+                        info!(agent_id = %agent_id, "Agent in error state but container healthy — recovering");
+                        return self.update_status(agent_id, AgentStatus::Running).await;
+                    }
+                }
+                // Container not healthy — do a full wake cycle
+                self.update_status(agent_id, AgentStatus::Stopped).await?;
+                self.wake_agent(agent_id).await
+            }
             AgentStatus::Creating => Err(AppError::AgentUnavailable(
                 "Agent is still being created".into(),
             )),
-            AgentStatus::Error => Err(AppError::AgentUnavailable(
-                "Agent is in an error state".into(),
-            )),
         }
+    }
+
+    /// Get the host port mapped to port 3000 for the given agent's container.
+    pub async fn get_host_port(&self, agent_id: Uuid) -> AppResult<Option<u16>> {
+        let agent = self.get_agent(agent_id).await?;
+        let container_id = agent
+            .container_id
+            .as_deref()
+            .ok_or_else(|| AppError::Internal("Agent has no container ID".into()))?;
+        self.runtime.get_host_port(container_id).await
     }
 
     /// Remove lock entries for agents that no longer exist in the DB.

@@ -1,15 +1,5 @@
 # Auto-loaded in dev. Override for local development.
 services:
-  traefik:
-    command:
-      - "--api.insecure=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-    ports:
-      - "80:80"
-      - "8090:8080"  # Traefik dashboard (dev only)
-
   backend:
     build:
       context: ./backend
