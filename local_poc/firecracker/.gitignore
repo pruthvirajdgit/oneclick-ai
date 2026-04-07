@@ -1,0 +1,11 @@
+# Build artifacts
+target/
+
+# Large binary resources (download/build locally)
+resources/vmlinux*
+resources/rootfs.ext4
+
+# Runtime state
+snapshots/
+*.socket
+*.pid
