@@ -1715,6 +1715,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "oneclick-shared",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

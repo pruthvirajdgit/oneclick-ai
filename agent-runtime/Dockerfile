@@ -48,7 +48,7 @@ EXPOSE 3000 3001
 # Health check — use a simple HTTP probe on the gateway port.
 # OpenClaw serves its Control UI at / once the gateway is ready.
 # start-period covers the ~60-90s boot time.
-HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=300s --retries=3 \
   CMD curl -sf http://localhost:3000/ > /dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/oneclick-entrypoint.sh"]

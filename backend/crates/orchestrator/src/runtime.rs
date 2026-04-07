@@ -342,26 +342,40 @@ impl AgentRuntime for DockerRuntime {
             return Ok(false);
         }
 
-        // If Docker health check is configured, use its status
+        // If Docker health check reports "healthy", trust it immediately.
         if let Some(health) = inspect.state.as_ref().and_then(|s| s.health.as_ref()) {
             if let Some(status) = &health.status {
                 let status_str: &str = status.as_ref();
-                let healthy = status_str == "healthy";
-                if status_str != "starting" {
-                    info!(container_id, status = status_str, "Docker health status");
+                if status_str == "healthy" {
+                    return Ok(true);
                 }
-                return Ok(healthy);
+                // For "starting" or "unhealthy", fall through to direct HTTP probe
+                // rather than trusting Docker's delayed HEALTHCHECK timing.
             }
         }
 
-        // Fallback: no Docker HEALTHCHECK configured.
-        // Warn loudly — production agent images should define HEALTHCHECK.
-        warn!(
-            container_id,
-            "Container running but no HEALTHCHECK configured — assuming healthy. \
-             Define a HEALTHCHECK in the agent Dockerfile for reliable readiness detection."
-        );
-        Ok(true)
+        // Direct HTTP probe to the container's gateway port on the Docker network.
+        // This catches readiness faster than Docker's HEALTHCHECK which has a
+        // start-period delay before it begins probing.
+        let container_name = inspect
+            .name
+            .as_deref()
+            .map(|n| n.trim_start_matches('/'))
+            .unwrap_or(container_id);
+
+        let probe_url = format!("http://{}:3000/", container_name);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
+
+        match client.get(&probe_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!(container_id, "Direct HTTP probe succeeded");
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     async fn get_host_port(&self, container_id: &str) -> AppResult<Option<u16>> {

@@ -20,8 +20,9 @@ use oneclick_shared::models::agent::{Agent, AgentStatus};
 use crate::runtime::{AgentRuntime, DockerRuntime};
 
 /// Maximum number of health-check attempts after waking an agent.
-/// OpenClaw takes ~60-90s to start; 45 × 3s = 135s budget.
-const HEALTH_CHECK_RETRIES: u32 = 45;
+/// OpenClaw gateway can take 3-5 minutes in resource-constrained environments
+/// (Codespaces, small VMs). 100 × 3s = 300s (5 min) budget.
+const HEALTH_CHECK_RETRIES: u32 = 100;
 
 /// Delay between health-check attempts.
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(3);
@@ -247,20 +248,16 @@ impl Orchestrator {
     /// Ensure the agent is ready to serve requests.
     ///
     /// - `Running` -> return immediately.
-    /// - `Stopped` -> wake the agent and return.
+    /// - `Stopped` / `Error` -> wake the agent and return.
     /// - `Creating` -> return an unavailable error (caller should retry).
-    /// - `Error` -> return an error.
     pub async fn ensure_ready(&self, agent_id: Uuid) -> AppResult<Agent> {
         let agent = self.get_agent(agent_id).await?;
 
         match agent.status {
             AgentStatus::Running => Ok(agent),
-            AgentStatus::Stopped => self.wake_agent(agent_id).await,
+            AgentStatus::Stopped | AgentStatus::Error => self.wake_agent(agent_id).await,
             AgentStatus::Creating => Err(AppError::AgentUnavailable(
                 "Agent is still being created".into(),
-            )),
-            AgentStatus::Error => Err(AppError::AgentUnavailable(
-                "Agent is in an error state".into(),
             )),
         }
     }

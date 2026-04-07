@@ -137,7 +137,19 @@ async fn wake_agent(
         .await?
         .ok_or_else(|| AppError::Internal("No host port mapped for agent".into()))?;
 
-    let chat_url = format!("http://localhost:{host_port}");
+    // Build the chat URL. In GitHub Codespaces, ports are forwarded via
+    // https://{codespace_name}-{port}.{domain}. Outside Codespaces, use localhost.
+    // Append the gateway token so the OpenClaw UI auto-authenticates.
+    let gw_token = "oneclick-internal";
+    let chat_url = match (
+        std::env::var("CODESPACE_NAME").ok().filter(|s| !s.is_empty()),
+        std::env::var("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN").ok().filter(|s| !s.is_empty()),
+    ) {
+        (Some(codespace), Some(domain)) => {
+            format!("https://{codespace}-{host_port}.{domain}/?token={gw_token}")
+        }
+        _ => format!("http://localhost:{host_port}/?token={gw_token}"),
+    };
     tracing::info!(agent_id = %id, %chat_url, "Agent woken — chat URL ready");
 
     Ok(Json(WakeResponse {
