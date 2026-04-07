@@ -2,6 +2,8 @@
 
 Standalone proof-of-concept for OneClick.ai: boot, snapshot-sleep, snapshot-wake Firecracker microVMs with bidirectional networking and OpenClaw AI gateway.
 
+**Built with [fctools](https://crates.io/crates/fctools)** — the official Firecracker Rust SDK from the rust-firecracker org.
+
 ## Results
 
 ### Stage 1 — Basic VM (busybox httpd)
@@ -48,18 +50,18 @@ curl -sL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/x86_64/vml
 bash scripts/setup-network.sh tap0
 
 # 4. Run the full lifecycle
-cargo run --release -- create   # Configure VM
-cargo run --release -- start    # Boot + wait for health
+cargo run --release -- start    # Create + boot + wait for health
 cargo run --release -- check    # Verify HTTP health
 cargo run --release -- stop     # Snapshot to disk + kill
-cargo run --release -- wake     # Restore from snapshot
+cargo run --release -- wake     # Restore from snapshot (fctools)
 cargo run --release -- check    # Verify still healthy
 cargo run --release -- destroy  # Clean up
 
-# 5. Run 5-cycle stress test
-cargo run --release -- create && cargo run --release -- start
+# 5. Run full lifecycle in one process (100% fctools)
+cargo run --release -- lifecycle
+
+# 6. Run 5-cycle stress test in one process (100% fctools)
 cargo run --release -- stress
-cargo run --release -- destroy
 
 # 6. Tear down networking
 bash scripts/teardown-network.sh tap0
@@ -106,14 +108,14 @@ Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 ┌──────────────┐           ┌──────────────────────┐
 │ Rust CLI     │           │ Linux 6.1 kernel     │
 │              │  TAP/tap0 │                      │
-│ fc_request() ├───────────┤ eth0 (virtio-net)    │
-│   (Unix sock)│           │                      │
-│              │  HTTP     │ busybox httpd :8080   │
+│ fctools::Vm  ├───────────┤ eth0 (virtio-net)    │
+│   Vm::prepare│           │                      │
+│   vm.start() │  HTTP     │ busybox httpd :8080   │
 │ health_check ├───────────┤  /health → JSON      │
 └──────┬───────┘           └──────────────────────┘
        │
        ▼
-  Firecracker API (Unix socket)
+  Firecracker API (Unix socket, via fctools)
 ```
 
 ### Stage 2
@@ -123,9 +125,9 @@ Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 ┌──────────────┐           ┌──────────────────────────┐
 │ Rust CLI     │           │ Linux 6.1 kernel         │
 │              │  TAP/tap0 │                          │
-│ fc_request() ├───────────┤ eth0 (virtio-net)        │
-│   (Unix sock)│           │                          │
-│              │  :3001    │ chat-bridge.js (:3001)   │
+│ fctools::Vm  ├───────────┤ eth0 (virtio-net)        │
+│   Vm::prepare│           │                          │
+│   vm.start() │  :3001    │ chat-bridge.js (:3001)   │
 │ health_check ├───────────┤   ↕ WebSocket            │
 │   (TCP)      │           │ OpenClaw gateway (:3000) │
 │              │  :3000    │   ↕ HTTPS                │
@@ -135,20 +137,20 @@ Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 └──────┬───────┘           └──────────────────────────┘
        │
        ▼
-  Firecracker API (Unix socket)
+  Firecracker API (Unix socket, via fctools)
 ```
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `create` | Start Firecracker process, configure VM (kernel, rootfs, network) |
-| `start` | Send InstanceStart, wait for HTTP health check |
-| `check` | Verify health endpoint responds |
-| `stop` | Pause VM → full snapshot → kill Firecracker |
-| `wake` | New Firecracker process → load snapshot → resume |
+| `create`/`start` | Create + start VM via fctools `Vm::prepare` + `vm.start()` |
+| `check` | Verify health endpoint responds (TCP) |
+| `stop` | Pause VM → full snapshot → kill (HTTP fallback for cross-process) |
+| `wake` | Restore from snapshot via fctools `VmConfiguration::RestoredFromSnapshot` |
 | `destroy` | Kill Firecracker, delete snapshots |
-| `stress` | Run 5 consecutive stop/wake cycles, report times |
+| `lifecycle` | Full lifecycle in one process (100% fctools) |
+| `stress` | Run 5 consecutive stop/wake cycles in one process (100% fctools) |
 | `chat <msg>` | Send chat message via bridge SSE endpoint (openclaw profile) |
 
 Use `--profile openclaw` for Stage 2 (default is `basic` for Stage 1).
@@ -199,7 +201,7 @@ local_poc/firecracker/
 ├── Cargo.toml
 ├── README.md
 ├── src/
-│   └── main.rs                    # Rust CLI with --profile flag
+│   └── main.rs                    # Rust CLI using fctools SDK
 ├── scripts/
 │   ├── build-rootfs.sh            # Stage 1: minimal Debian rootfs
 │   ├── build-rootfs-openclaw.sh   # Stage 2: OpenClaw rootfs from Docker
