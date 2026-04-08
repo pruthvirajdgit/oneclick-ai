@@ -271,7 +271,32 @@ docker compose down -v   # removes volumes too — use with caution
 
 | Metric | Docker Runtime | Firecracker Runtime |
 |--------|---------------|---------------------|
-| Cold boot to health check | ~5–7 min | ~1.1s |
-| Wake from snapshot | N/A | **~116ms** 🚀 |
-| Snapshot sleep | N/A | ~11.9s |
+| Cold boot to health check | ~5–7 min | ~3s |
+| OpenClaw gateway ready (cold boot) | included above | ~40–60s (JIT compile) |
+| Wake from snapshot | N/A | **~400ms** 🚀 |
+| Gateway ready (snapshot wake) | N/A | Instant |
+| Snapshot sleep | N/A | ~11s |
 | Chat response (Groq) | ~1–2s | ~1–2s |
+
+## Frontend Development
+
+### Start Vite Dev Server
+
+```bash
+cd frontend
+npm install
+npm run dev   # starts on port 3000
+```
+
+Vite is configured to proxy `/api` and `/agent-ui` to the backend at `localhost:8080` (with WebSocket support for chat). No separate CORS configuration needed.
+
+### Port Forwarding (remote VM)
+
+If developing on a remote VM (e.g., Azure), forward port 3000 to your local machine:
+
+```bash
+# From your local machine
+ssh -L 3000:localhost:3000 user@vm-ip
+```
+
+Only port 3000 needs forwarding — Vite proxies all API calls to the backend.

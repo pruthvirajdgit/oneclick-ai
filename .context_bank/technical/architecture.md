@@ -86,9 +86,9 @@ pub trait AgentRuntime: Send + Sync {
 | Aspect | DockerRuntime | FirecrackerRuntime |
 |--------|--------------|-------------------|
 | Isolation | Container (cgroups/namespaces) | MicroVM (KVM hardware) |
-| Cold boot | ~5-7 min (gateway JIT) | ~1.1s (VM boot) + ~26s (gateway) |
-| Wake from sleep | ~5-10s (docker start) | **~116ms** (snapshot restore) |
-| Sleep | docker stop (10s grace) | Pause → snapshot → shutdown (~12s) |
+| Cold boot | ~5-7 min (gateway JIT) | ~1.1s (VM boot) + ~40-60s (gateway) |
+| Wake from sleep | ~5-10s (docker start) | **~400ms** (snapshot restore) |
+| Sleep | docker stop (10s grace) | Pause → snapshot → shutdown (~11s) |
 | Networking | Docker bridge, container IP | TAP devices, /30 subnets |
 | Agent address | Container bridge IP | TAP guest IP (172.16.0.X) |
 | Host port | Random mapped port | None (direct TAP access) |
@@ -98,16 +98,17 @@ pub trait AgentRuntime: Send + Sync {
 ## Data Flow: User Sends Chat Message
 1. Client → `WS /api/agents/{id}/chat?token=<jwt>`
 2. API validates JWT, checks agent ownership
-3. If agent stopped → Orchestrator calls `start_agent` (Docker: `docker start`, FC: snapshot restore or cold boot), polls health
-4. API sends status messages to client: "Waking up agent..." → "Agent ready" → "Thinking..."
-5. API resolves agent address via `get_agent_address()` → container bridge IP (Docker) or TAP guest IP (Firecracker)
-6. API sends HTTP POST to chat-bridge.js (port 3001) at the agent address. The bridge translates HTTP→WebSocket for the OpenClaw gateway, handling device pairing and Ed25519 authentication automatically.
-7. chat-bridge.js returns an SSE stream. Backend parses SSE events and forwards tokens to the client WebSocket as `{type: "chunk"}` messages.
-8. Agent processes message, calls LLM via proxy: `POST http://{backend}:8080/internal/llm/v1/chat/completions` (auth encoded in `OPENROUTER_API_KEY` env var)
-9. LLM Proxy supports true SSE streaming: routes to Groq (primary) → Groq 8B (fallback) → OpenRouter (last resort). Streams tokens back through the entire pipeline.
-10. LLM Proxy logs usage to PostgreSQL
-11. Response flows back: LLM → Proxy (SSE) → Agent → chat-bridge (SSE) → Backend → WebSocket → Client
-12. Backend updates `agents.last_active`
+3. Frontend first polls `GET /agents/{id}/gateway-status` until `{ "ready": true }` — only then opens WebSocket. This gates the chat UI on OpenClaw gateway readiness (~40-60s on cold boot, instant on snapshot wake).
+4. If agent stopped → Orchestrator calls `start_agent` (Docker: `docker start`, FC: snapshot restore or cold boot), polls health
+5. API sends status messages to client: "Agent ready" → "Connecting to agent..."
+6. API resolves agent address via `get_agent_address()` → container bridge IP (Docker) or TAP guest IP (Firecracker)
+7. API sends HTTP POST to chat-bridge.js (port 3001) at the agent address. The bridge translates HTTP→WebSocket for the OpenClaw gateway, handling device pairing and Ed25519 authentication automatically. Retries up to 25× with 3s delay if bridge returns 503 (gateway not connected).
+8. chat-bridge.js returns an SSE stream. Backend parses SSE events and forwards tokens to the client WebSocket as `{type: "stream"}` messages.
+9. Agent processes message, calls LLM via proxy: `POST http://{backend}:8080/internal/llm/v1/chat/completions` (auth encoded in `OPENROUTER_API_KEY` env var)
+10. LLM Proxy supports true SSE streaming: routes to Groq (primary) → Groq 8B (fallback) → OpenRouter (last resort). Streams tokens back through the entire pipeline.
+11. LLM Proxy logs usage to PostgreSQL
+12. Response flows back: LLM → Proxy (SSE) → Agent → chat-bridge (SSE) → Backend → WebSocket → Client
+13. Backend updates `agents.last_active`
 
 ## Data Flow: Scheduled Job Executes
 1. Scheduler polls every 60s: `SELECT * FROM scheduled_jobs WHERE status='active' AND next_run_at <= NOW()`
@@ -118,12 +119,12 @@ pub trait AgentRuntime: Send + Sync {
 6. After 15 min idle, Monitor stops the agent
 
 ## Data Flow: Scale-to-Zero
-1. Monitor scans every 5 min for agents where `status='running' AND last_active < NOW() - 15 min`
+1. Monitor scans every 5 min for agents where `status='running' AND last_active < NOW() - idle_timeout` (default 30 min, configurable via `IDLE_TIMEOUT_MINUTES`)
 2. Skips agents with scheduled jobs due within 20 min
 3. Skips agents with pending messages in queue
 4. For eligible agents: Orchestrator calls `stop_agent`
    - **Docker:** `docker stop` (10s grace). Container uses 0 CPU, 0 RAM. Docker volume retains state.
-   - **Firecracker:** Pause → snapshot (memory + VM state to disk) → shutdown. Rootfs retains state. Snapshot enables ~116ms restore.
+   - **Firecracker:** Pause → snapshot (memory + VM state to disk, ~11s) → shutdown. Rootfs retains state. Snapshot enables ~400ms restore.
 
 ## Key Design Invariants
 1. **All LLM traffic goes through the proxy.** Agents never call Groq/OpenRouter directly. The backend owns API keys, rate limits, and usage tracking.

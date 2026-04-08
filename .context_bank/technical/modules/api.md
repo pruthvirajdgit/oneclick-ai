@@ -33,6 +33,8 @@ Docker client is shared via `AppState` (not created per-message) and used for `d
 | GET | /api/agents/{id} | JWT | Get agent details (ownership check) |
 | DELETE | /api/agents/{id} | JWT | Destroy agent (→ orchestrator) |
 | POST | /api/agents/{id}/wake | JWT | Wake a sleeping agent (~450s budget) |
+| POST | /api/agents/{id}/sleep | JWT | Put agent to sleep (snapshot VM) |
+| GET | /api/agents/{id}/gateway-status | JWT | Check if OpenClaw gateway is ready |
 | WS | /api/agents/{id}/chat | JWT (query param) | Real-time chat with token streaming |
 | GET | /api/schedules | JWT | List schedules |
 | POST | /api/schedules | JWT | Create schedule (cron parse) |
@@ -57,12 +59,13 @@ Docker client is shared via `AppState` (not created per-message) and used for `d
 1. JWT validated from `?token=` query param (not header — WebSocket limitation)
 2. Agent ownership verified via DB query
 3. If agent stopped → wake via orchestrator, send status messages to client
-4. Chat handler sends HTTP POST to chat-bridge.js (port 3001) inside the agent container. The bridge handles WebSocket authentication with the OpenClaw gateway via Ed25519 keypair and device pairing.
-5. chat-bridge.js returns an SSE stream. Backend parses SSE `data:` events and forwards tokens to the client WebSocket as `{type: "chunk"}` messages in real-time.
-6. If bridge returns 503 (gateway not ready), backend retries up to 10 times with 5s delay between attempts.
-7. Status messages sent to client: "Waking up agent..." → "Agent ready" → "Thinking..." → streaming tokens → done
-8. Update `agents.last_active` after each exchange
-9. Error responses return generic messages — internal details are never leaked to the client
+4. Frontend gates chat UI on `GET /agents/{id}/gateway-status` returning `{ "ready": true }` before connecting WebSocket. This prevents showing the chat UI during the ~40-60s OpenClaw gateway boot.
+5. Chat handler sends HTTP POST to chat-bridge.js (port 3001) inside the agent container. The bridge handles WebSocket authentication with the OpenClaw gateway via Ed25519 keypair and device pairing.
+6. chat-bridge.js returns an SSE stream. Backend parses SSE `data:` events and forwards tokens to the client WebSocket as `{type: "stream"}` messages in real-time.
+7. If bridge returns 503 (gateway not ready), backend retries up to 25 times with 3s delay between attempts (~75s budget).
+8. Status messages sent to client: "Agent ready" → "Connecting to agent..." → streaming tokens → done
+9. Update `agents.last_active` after each exchange
+10. Error responses return generic messages — internal details are never leaked to the client
 
 ## Extension
 - New endpoint: add handler in appropriate `routes/*.rs`, register in `routes()` or `create_router()`

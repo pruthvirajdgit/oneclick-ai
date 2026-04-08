@@ -1,9 +1,15 @@
-# Phase 1 — Testing Guide
+# Testing Guide
 
 ## Test Levels
 
 ```
 ┌─────────────────────┐
+│    E2E Tests         │  12 tests, real infra + mock/real runtime
+│    bash tests/       │  Run: on VM with Firecracker
+│    run_e2e.sh        │  (~5 min with real FC VMs)
+└──────────┬──────────┘
+           │
+┌──────────┴──────────┐
 │  Integration Tests   │  ~30 tests, real DB, mock runtime
 │  cargo test          │  Run: CI on every PR (~30s)
 │  --features integ    │
@@ -14,6 +20,43 @@
 │    cargo test        │  Run: locally + CI (~5s)
 └─────────────────────┘
 ```
+
+## E2E Tests
+
+Full end-to-end tests covering the complete agent lifecycle via HTTP API.
+
+**Location**: `backend/tests/e2e_workflow.rs` + `backend/tests/run_e2e.sh`
+
+**What they test** (12 test functions):
+1. Health check endpoint
+2. User signup
+3. User login
+4. Agent creation (with rootfs copy)
+5. Agent wake (cold boot + health check)
+6. Chat roundtrip (user → bridge → LLM → response)
+7. Agent sleep (snapshot save)
+8. Agent wake from snapshot (restore)
+9. Chat after snapshot wake
+10. Agent destroy
+11. Duplicate signup rejection
+12. Unauthorized access prevention
+
+**Running**:
+```bash
+# Mock runtime (no Firecracker/Docker needed)
+cd backend && cargo test --test e2e_workflow
+
+# Full Firecracker runtime (requires KVM + TAP + rootfs)
+cd backend && bash tests/run_e2e.sh
+```
+
+**Prerequisites for Firecracker E2E**:
+- KVM enabled (`/dev/kvm` exists)
+- Firecracker + jailer binaries in `/usr/local/bin/`
+- Kernel at `/opt/firecracker/vmlinux-6.1`
+- Rootfs template at `/opt/firecracker/rootfs-openclaw.ext4`
+- TAP devices configured
+- PostgreSQL and Redis running
 
 ## Unit Tests
 

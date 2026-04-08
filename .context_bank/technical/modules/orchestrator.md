@@ -54,9 +54,15 @@ pub trait AgentRuntime: Send + Sync {
 | Operation | What happens |
 |-----------|-------------|
 | `create_agent` | Copy rootfs → allocate TAP → mount rootfs → inject /etc/fc-network + /etc/openclaw-env → unmount |
-| `start_agent` | If snapshot exists → restore (116ms). Else → cold boot via fctools |
+| `start_agent` | If TAP allocation lost (backend restart) → auto-re-allocate. If snapshot exists → restore (~400ms). Else → cold boot via fctools |
 | `stop_agent` | Pause VM → create snapshot → shutdown |
 | `destroy_agent` | Shutdown VM → release TAP → delete rootfs + snapshots |
+
+### TAP Auto-Re-Allocation
+TAP allocations are held in-memory (`TapManager.allocations` HashMap). After a backend restart, agents created before the restart have no TAP mapping. `start_agent()` detects this (`get_allocation()` returns None) and calls `tap_manager.allocate()` before booting the VM. The re-allocated TAP may differ from the original, but the rootfs config (`/etc/fc-network`) is immutable — the guest IP stays the same as long as the TAP subnet matches.
+
+### Known Limitation
+After backend restart, agent DB status may show `running` but no VM exists. The stale status must be corrected (reset to `stopped`) before wake will work. Future improvement: on startup, scan `running` agents and verify VM existence.
 
 ### Rootfs Config Injection
 Each VM's rootfs gets two config files written at create time:

@@ -141,9 +141,30 @@ Key details:
 
 ## Known Limitations
 
-1. **In-memory snapshots lost on backend restart** — need to implement on-disk snapshot recovery
+1. **In-memory snapshots lost on backend restart** — need to implement on-disk snapshot recovery. TAP allocations are also in-memory but auto-re-allocated on next `start_agent()`.
 2. **No jailer** — VMs run without Firecracker's security jailer (chroot, seccomp, cgroups)
 3. **16 VM limit** — TAP pool is fixed at 16 devices (configurable but not dynamically expandable)
 4. **4GB per rootfs** — each VM gets a full copy; CoW only helps on btrfs/xfs
 5. **1.5GB per snapshot** — disk usage scales linearly with VM count
 6. **Conversation memory not persisted** — OpenClaw's in-memory conversation cache is lost on sleep
+7. **Stale agent status after restart** — agents may show `running` in DB but have no VM. Status should be reset to `stopped` manually or via startup reconciliation (not yet implemented).
+
+## OpenClaw Configuration
+
+The `contextTokens` setting in OpenClaw controls the maximum context window size. This must be set to at least **65536** (65K) because OpenClaw's system prompt + MCP tools definition exceeds 16K tokens. With the default 16384, every chat fails with "Context limit exceeded".
+
+Set in 4 locations:
+- `local_poc/firecracker/scripts/build-rootfs-template.sh` (2 occurrences — build time)
+- Rootfs `/usr/sbin/fc-init` (runtime config generation)
+- Rootfs `/usr/local/bin/oneclick-entrypoint.sh` (runtime config generation)
+
+## Performance (measured on Azure VM, 4 vCPU, 16GB RAM)
+
+| Operation | Duration |
+|-----------|----------|
+| VM cold boot to health check | ~35ms (Firecracker boot) + ~3s (chat-bridge healthy) |
+| OpenClaw gateway init (cold boot) | ~40-60s (Java JIT compile) |
+| Snapshot save (sleep) | ~11s |
+| Snapshot restore (wake) | ~400ms |
+| Gateway ready after snapshot restore | Instant (process state preserved) |
+| Chat roundtrip (after gateway ready) | <1s (Groq LLM, 300+ tokens/sec) |

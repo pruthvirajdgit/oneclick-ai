@@ -98,14 +98,41 @@ Delete agent and its container.
 ---
 
 ### POST /api/agents/:id/wake
-Wake a sleeping agent. Returns immediately — agent boots in background (~5-7 min on Docker).
+Wake a sleeping agent. Blocks until healthy or returns error.
 
 ```json
 // Response 200
-{ "status": "waking", "chat_url": "/chat/uuid" }
+{ "status": "running", "chat_url": "/agent-ui/uuid/?token=oneclick-internal" }
 
 // Error 404
 { "error": "Agent not found" }
+```
+
+---
+
+### POST /api/agents/:id/sleep
+Put a running agent to sleep (snapshot VM state, stop container).
+
+```json
+// Response 200
+{ "id": "uuid", "status": "stopped", ... }
+
+// Error 404
+{ "error": "Agent not found" }
+```
+
+---
+
+### GET /api/agents/:id/gateway-status
+Check if the OpenClaw gateway inside the agent VM is ready for chat.
+Frontend polls this before opening the chat UI.
+
+```json
+// Response 200 (ready)
+{ "ready": true }
+
+// Response 200 (not ready)
+{ "ready": false, "reason": "bridge not reachable" }
 ```
 
 ---
@@ -117,6 +144,8 @@ WebSocket connection for real-time chat with token streaming.
 
 **Connection**: `ws://localhost:8080/api/agents/:id/chat?token=<jwt>`
 
+**Prerequisite**: Call `GET /agents/:id/gateway-status` first and wait until `{ "ready": true }`. The chat UI should not be shown until the gateway is ready.
+
 **Client → Server messages**:
 ```json
 { "type": "message", "content": "Find me cheap flights to Bangalore" }
@@ -125,13 +154,12 @@ WebSocket connection for real-time chat with token streaming.
 **Server → Client messages**:
 ```json
 // Status updates
-{ "type": "status", "message": "Waking up agent..." }
 { "type": "status", "message": "Agent ready" }
-{ "type": "status", "message": "Thinking..." }
+{ "type": "status", "message": "Connecting to agent..." }
 
 // Token streaming (real-time, word-by-word)
-{ "type": "chunk", "content": "I'll search for " }
-{ "type": "chunk", "content": "flights to Bangalore..." }
+{ "type": "stream", "content": "I'll search for " }
+{ "type": "stream", "content": "flights to Bangalore..." }
 { "type": "done", "content": "I found 3 flights under ₹3,500..." }
 
 // Errors

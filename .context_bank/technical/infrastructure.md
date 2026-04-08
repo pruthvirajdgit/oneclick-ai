@@ -73,10 +73,12 @@ create_agent:
   allocate TAP device
 
 start_agent (cold boot):
+  if TAP allocation lost (backend restart) → auto-re-allocate
   fctools → configure VM (kernel, rootfs, network) → boot → health check
 
 start_agent (snapshot restore):
-  fctools → load snapshot (mem + vmstate) → resume → health check (~116ms)
+  if TAP allocation lost (backend restart) → auto-re-allocate
+  fctools → load snapshot (mem + vmstate) → resume → health check (~400ms)
 
 stop_agent:
   pause VM → create snapshot → save to memory + disk → shutdown

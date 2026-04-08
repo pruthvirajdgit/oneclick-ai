@@ -58,14 +58,23 @@ Browser WS → Backend (chat.rs) → HTTP POST → chat-bridge.js:3001
 - `get_agent_address()` trait method — unified agent addressing (container IP or TAP IP)
 - Runtime selector: `AGENT_RUNTIME=docker|firecracker` env var
 - Sleep endpoint: `POST /api/agents/:id/sleep`
+- Gateway status endpoint: `GET /api/agents/:id/gateway-status` (polls bridge health for OpenClaw readiness)
+- TAP auto-re-allocation on backend restart
 - Backend runs on host for both runtimes (deployment refactor)
-- Full E2E verified: signup → create → wake (1.1s) → chat → sleep (11.9s) → wake from snapshot (116ms) → chat → delete
+- Full E2E verified: signup → create → wake → chat → sleep → wake from snapshot → chat → delete
 
-**Performance:**
-- Cold boot to health check: ~1.1s
-- Snapshot restore to running: ~116ms 🚀
-- Gateway ready for chat after cold boot: ~26s
-- Snapshot save (sleep): ~11.9s
+**Frontend UX (Phase 3):**
+- Dashboard: async agent creation (fire-and-forget, "Creating…" card), dynamic buttons (Wake/Chat + Sleep/Delete)
+- Chat: gateway readiness gate (polls `/gateway-status` before showing chat UI), "Waiting for agent gateway…" loading screen
+- Vite dev proxy for `/api` (with WebSocket support) and `/agent-ui`
+- 204 No Content response handling (delete fix)
+
+**Performance (measured on Azure VM, 4 vCPU, 16GB RAM):**
+- Cold boot to health check: ~3s
+- OpenClaw gateway init (cold boot): ~40-60s (Java JIT)
+- Snapshot save (sleep): ~11s
+- Snapshot restore (wake): ~400ms
+- Gateway ready after snapshot wake: Instant
 
 **Not in Phase 3:** Jailer security hardening, on-disk snapshot recovery after backend restart, billing, multi-region.
 
