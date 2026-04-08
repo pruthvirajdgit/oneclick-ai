@@ -159,7 +159,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, agent_id: Uuid, u
 /// POST to the in-container chat bridge and stream the SSE response back
 /// to the client WebSocket token-by-token.
 ///
-/// Retries up to 10 times with 3s delay if the bridge returns 503
+/// Retries up to 25 times with 3s delay if the bridge returns 503
 /// (gateway not connected yet — common right after agent wake).
 async fn bridge_chat(
     agent_address: &str,
@@ -169,8 +169,9 @@ async fn bridge_chat(
     let chat_url = format!("http://{}:3001/chat", agent_address);
     let client = reqwest::Client::new();
 
+    let max_attempts = 25;
     let mut last_err = String::new();
-    for attempt in 1..=10 {
+    for attempt in 1..=max_attempts {
         let result = client
             .post(&chat_url)
             .json(&serde_json::json!({ "message": message }))
@@ -183,7 +184,7 @@ async fn bridge_chat(
                 // Success — proceed to stream SSE below
                 return stream_bridge_response(resp, client_ws).await;
             }
-            Ok(resp) if resp.status().as_u16() == 503 && attempt < 10 => {
+            Ok(resp) if resp.status().as_u16() == 503 && attempt < max_attempts => {
                 let body = resp.text().await.unwrap_or_default();
                 tracing::info!(
                     attempt,
@@ -191,7 +192,7 @@ async fn bridge_chat(
                     "Bridge not ready (503: {body}), retrying in 3s..."
                 );
                 let _ =
-                    send_status(client_ws, &format!("Connecting to agent (attempt {}/10)...", attempt)).await;
+                    send_status(client_ws, "Connecting to agent...").await;
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 last_err = format!("Bridge 503: {body}");
             }
@@ -199,7 +200,7 @@ async fn bridge_chat(
                 let body = resp.text().await.unwrap_or_default();
                 return Err(format!("Bridge error: {body}"));
             }
-            Err(e) if attempt < 10 => {
+            Err(e) if attempt < max_attempts => {
                 tracing::info!(
                     attempt,
                     agent_address,
@@ -215,7 +216,7 @@ async fn bridge_chat(
         }
     }
 
-    Err(format!("Bridge not ready after 10 attempts: {last_err}"))
+    Err(format!("Bridge not ready after {max_attempts} attempts: {last_err}"))
 }
 
 /// Stream SSE response from bridge and forward tokens to client WebSocket.

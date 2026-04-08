@@ -589,13 +589,17 @@ impl AgentRuntime for FirecrackerRuntime {
 
         info!(agent_id, "Starting Firecracker VM");
 
-        let alloc = self
-            .tap_manager
-            .get_allocation(agent_id)
-            .await
-            .ok_or_else(|| {
-                AppError::Internal(format!("No TAP allocation for agent {agent_id}"))
-            })?;
+        let alloc = match self.tap_manager.get_allocation(agent_id).await {
+            Some(a) => a,
+            None => {
+                // TAP allocation lost (e.g. backend restart) — re-allocate
+                info!(agent_id, "Re-allocating TAP device for agent");
+                self.tap_manager
+                    .allocate(agent_id)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("TAP re-allocation failed: {e}")))?
+            }
+        };
 
         // Extract snapshot and old VM from lock scope if available
         let restore_data = {

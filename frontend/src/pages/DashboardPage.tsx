@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, apiFetch } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -25,6 +25,8 @@ import {
   Clock,
   Loader2,
   MessageSquare,
+  Moon,
+  Play,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -60,10 +62,10 @@ const STATUS_CONFIG: Record<
   running: { dot: "bg-emerald-500", label: "Running", variant: "outline" },
   stopped: { dot: "bg-gray-400", label: "Stopped", variant: "secondary" },
   error: { dot: "bg-red-500", label: "Error", variant: "destructive" },
-  creating: { dot: "bg-amber-400", label: "Creating", variant: "outline" },
+  creating: { dot: "bg-amber-400 animate-pulse", label: "Creating…", variant: "outline" },
 };
 
-const REFRESH_INTERVAL = 30_000;
+const REFRESH_INTERVAL = 5_000;
 
 // ── Component ──────────────────────────────────────────────────
 export default function DashboardPage() {
@@ -74,6 +76,8 @@ export default function DashboardPage() {
   const [model, setModel] = useState("groq/llama-3.3-70b-versatile");
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [wakingAgents, setWakingAgents] = useState<Set<string>>(new Set());
+  const [sleepingAgents, setSleepingAgents] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
 
   // ── Fetch agents ───────────────────────────────────────────
@@ -82,6 +86,22 @@ export default function DashboardPage() {
     try {
       const data = await api.get<Agent[]>("/agents");
       setAgents(data);
+      // Clear waking state for agents that are now running
+      setWakingAgents((prev) => {
+        const next = new Set(prev);
+        for (const a of data) {
+          if (a.status === "running") next.delete(a.id);
+        }
+        return next.size !== prev.size ? next : prev;
+      });
+      // Clear sleeping state for agents that are now stopped
+      setSleepingAgents((prev) => {
+        const next = new Set(prev);
+        for (const a of data) {
+          if (a.status === "stopped") next.delete(a.id);
+        }
+        return next.size !== prev.size ? next : prev;
+      });
     } catch {
       if (showLoading) toast.error("Failed to load agents");
     } finally {
@@ -93,7 +113,7 @@ export default function DashboardPage() {
     fetchAgents(true);
   }, [fetchAgents]);
 
-  // Auto-refresh every 30s
+  // Auto-refresh every 5s (needed for async create and wake status updates)
   const fetchRef = useRef(fetchAgents);
   fetchRef.current = fetchAgents;
   useEffect(() => {
@@ -101,19 +121,68 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
-  // ── Create agent ───────────────────────────────────────────
+  // ── Create agent (async — close dialog immediately) ────────
   async function handleCreate() {
     setCreating(true);
     try {
-      await api.post("/agents", { model });
-      toast.success("Agent created!");
+      // Fire and forget — don't await the full response
+      api.post("/agents", { model }).then(() => {
+        fetchAgents(false);
+      }).catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Agent creation failed");
+        fetchAgents(false);
+      });
+      toast.success("Agent is being created…");
       setCreateOpen(false);
       setModel("groq/llama-3.3-70b-versatile");
-      await fetchAgents(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to create agent");
+      // Add a temporary "creating" agent to show immediately
+      setAgents((prev) => [
+        {
+          id: "creating-temp",
+          status: "creating",
+          model,
+          last_active: null,
+          created_at: new Date().toISOString(),
+          chat_url: null,
+        },
+        ...prev,
+      ]);
     } finally {
       setCreating(false);
+    }
+  }
+
+  // ── Wake agent ─────────────────────────────────────────────
+  async function handleWake(agent: Agent) {
+    setWakingAgents((prev) => new Set(prev).add(agent.id));
+    try {
+      await apiFetch(`/agents/${agent.id}/wake`, { method: "POST" });
+      toast.success("Agent is running!");
+      await fetchAgents(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to wake agent");
+      setWakingAgents((prev) => {
+        const next = new Set(prev);
+        next.delete(agent.id);
+        return next;
+      });
+    }
+  }
+
+  // ── Sleep agent ─────────────────────────────────────────────
+  async function handleSleep(agent: Agent) {
+    setSleepingAgents((prev) => new Set(prev).add(agent.id));
+    try {
+      await apiFetch(`/agents/${agent.id}/sleep`, { method: "POST" });
+      toast.success("Agent is sleeping");
+      await fetchAgents(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to sleep agent");
+      setSleepingAgents((prev) => {
+        const next = new Set(prev);
+        next.delete(agent.id);
+        return next;
+      });
     }
   }
 
@@ -246,22 +315,70 @@ export default function DashboardPage() {
                 </CardContent>
 
                 <CardFooter className="gap-2">
-                  <Button
-                    size="sm"
-                    className="flex-1 bg-indigo-600 text-white hover:bg-indigo-700"
-                    onClick={() => handleChat(agent)}
-                  >
-                    <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
-                    Chat
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => setDeleteTarget(agent)}
-                  >
-                    <Trash2 className="mr-1 h-3.5 w-3.5" />
-                    Delete
-                  </Button>
+                  {/* Left button: Wake or Chat */}
+                  {agent.status === "running" ? (
+                    <Button
+                      size="sm"
+                      className="flex-1 bg-indigo-600 text-white hover:bg-indigo-700"
+                      onClick={() => handleChat(agent)}
+                      disabled={sleepingAgents.has(agent.id)}
+                    >
+                      <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                      Chat
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      className="flex-1"
+                      variant="outline"
+                      onClick={() => handleWake(agent)}
+                      disabled={agent.status === "creating" || agent.id === "creating-temp" || wakingAgents.has(agent.id)}
+                    >
+                      {wakingAgents.has(agent.id) ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          Waking…
+                        </>
+                      ) : (
+                        <>
+                          <Play className="mr-1.5 h-3.5 w-3.5" />
+                          Wake
+                        </>
+                      )}
+                    </Button>
+                  )}
+
+                  {/* Right button: Sleep (if running) or Delete (if stopped) */}
+                  {agent.status === "running" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleSleep(agent)}
+                      disabled={sleepingAgents.has(agent.id)}
+                    >
+                      {sleepingAgents.has(agent.id) ? (
+                        <>
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                          Sleeping…
+                        </>
+                      ) : (
+                        <>
+                          <Moon className="mr-1 h-3.5 w-3.5" />
+                          Sleep
+                        </>
+                      )}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => setDeleteTarget(agent)}
+                      disabled={agent.status === "creating" || agent.id === "creating-temp"}
+                    >
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                      Delete
+                    </Button>
+                  )}
                 </CardFooter>
               </Card>
             );

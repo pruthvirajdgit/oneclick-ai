@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}", get(get_agent).delete(delete_agent))
         .route("/{id}/wake", post(wake_agent))
         .route("/{id}/sleep", post(sleep_agent))
+        .route("/{id}/gateway-status", get(gateway_status))
 }
 
 /// `GET /api/agents` — List the authenticated user's agents.
@@ -183,4 +184,52 @@ async fn wake_agent(
         status: agent.status,
         chat_url,
     }))
+}
+
+/// `GET /api/agents/:id/gateway-status` — Check if the OpenClaw gateway is ready.
+///
+/// Returns `{ "ready": true }` if the in-VM bridge reports gateway connected,
+/// otherwise `{ "ready": false }`.
+async fn gateway_status(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let agent = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Agent {id} not found")))?;
+
+    if agent.user_id != auth.0.sub {
+        return Err(AppError::NotFound(format!("Agent {id} not found")));
+    }
+
+    if agent.status != oneclick_shared::models::agent::AgentStatus::Running {
+        return Ok(Json(serde_json::json!({ "ready": false, "reason": "agent not running" })));
+    }
+
+    let addr = match state.orchestrator.get_agent_address(id).await {
+        Ok(a) => a,
+        Err(_) => {
+            return Ok(Json(serde_json::json!({ "ready": false, "reason": "address unavailable" })));
+        }
+    };
+
+    // Hit the bridge health endpoint
+    let health_url = format!("http://{}:3001/health", addr);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap();
+
+    match client.get(&health_url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            // Bridge returns {"status":"ok","connected":true} when gateway is ready
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            let connected = body.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
+            Ok(Json(serde_json::json!({ "ready": connected })))
+        }
+        _ => Ok(Json(serde_json::json!({ "ready": false, "reason": "bridge not reachable" }))),
+    }
 }
