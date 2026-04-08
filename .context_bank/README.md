@@ -7,7 +7,7 @@ Machine-readable project context for AI agents. Three sections:
 ```
 .context_bank/
 ├── README.md                          ← You are here
-├── setup.md                           # Machine setup guide (dev environment, both runtimes)
+├── ../new_machine_setup/              # Machine setup guides (Linux + macOS)
 ├── product/
 │   ├── vision.md                      # What we're building, for whom, and why
 │   ├── decisions.md                   # Product decisions with rationale
