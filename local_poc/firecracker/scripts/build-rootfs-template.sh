@@ -15,6 +15,17 @@ ROOTFS_SIZE_MB=4096
 MOUNT_DIR="/tmp/fc-template-mount"
 DOCKER_IMAGE="${1:-oneclick-agent:latest}"
 BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+CONTAINER_ID=""
+
+cleanup() {
+    sudo umount "$MOUNT_DIR" 2>/dev/null || true
+    if [ -n "${CONTAINER_ID:-}" ]; then
+        docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
+    fi
+    sudo rm -rf "$MOUNT_DIR"
+}
+
+trap cleanup EXIT
 
 echo "=== Building OpenClaw Firecracker rootfs TEMPLATE ==="
 echo "    Source image: ${DOCKER_IMAGE}"
@@ -40,6 +51,7 @@ echo "[3/7] Exporting Docker image filesystem..."
 CONTAINER_ID=$(docker create "$DOCKER_IMAGE" /bin/true)
 docker export "$CONTAINER_ID" | sudo tar xf - -C "$MOUNT_DIR"
 docker rm "$CONTAINER_ID" > /dev/null
+CONTAINER_ID=""
 
 # 4. Fix shell symlinks
 echo "[4/7] Fixing shell symlinks..."
@@ -95,7 +107,15 @@ mount -t tmpfs tmpfs /run 2>/dev/null
 GUEST_IP="172.16.0.2"
 GUEST_CIDR="172.16.0.2/30"
 GATEWAY_IP="172.16.0.1"
-[ -f /etc/fc-network ] && . /etc/fc-network
+if [ -f /etc/fc-network ]; then
+    while IFS='=' read -r key value; do
+        case "$key" in
+            GUEST_IP)   GUEST_IP="$value" ;;
+            GUEST_CIDR) GUEST_CIDR="$value" ;;
+            GATEWAY_IP) GATEWAY_IP="$value" ;;
+        esac
+    done < /etc/fc-network
+fi
 
 ip link set lo up
 ip addr add 127.0.0.1/8 dev lo 2>/dev/null
@@ -241,7 +261,7 @@ if [ -f /opt/oneclick-tools.js ] && [ ! -f /home/node/.openclaw/plugins/oneclick
 fi
 
 [ -f /usr/local/lib/pair-device.js ] && node /usr/local/lib/pair-device.js &
-node /usr/local/bin/chat-bridge.js &
+[ -f /usr/local/bin/chat-bridge.js ] && node /usr/local/bin/chat-bridge.js &
 rm -rf /tmp/jiti 2>/dev/null
 
 exec openclaw gateway run --verbose --token "${OPENCLAW_GATEWAY_TOKEN}"
@@ -252,8 +272,8 @@ sudo mkdir -p "$MOUNT_DIR/home/node/.openclaw"
 sudo mkdir -p "$MOUNT_DIR/home/node/workspace"
 
 echo "[7/7] Unmounting..."
-sudo umount "$MOUNT_DIR"
-sudo rm -rf "$MOUNT_DIR"
+trap - EXIT
+cleanup
 
 echo ""
 echo "=== Template rootfs built ==="

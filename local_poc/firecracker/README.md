@@ -63,7 +63,7 @@ cargo run --release -- lifecycle
 # 6. Run 5-cycle stress test in one process (100% fctools)
 cargo run --release -- stress
 
-# 6. Tear down networking
+# 7. Tear down networking
 bash scripts/teardown-network.sh tap0
 ```
 
@@ -103,7 +103,7 @@ cargo run --release -- --profile openclaw destroy
 
 ### Stage 1
 
-```
+```text
 Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 ┌──────────────┐           ┌──────────────────────┐
 │ Rust CLI     │           │ Linux 6.1 kernel     │
@@ -120,7 +120,7 @@ Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 
 ### Stage 2
 
-```
+```text
 Host (172.16.0.1)          Firecracker VM (172.16.0.2)
 ┌──────────────┐           ┌──────────────────────────┐
 │ Rust CLI     │           │ Linux 6.1 kernel         │

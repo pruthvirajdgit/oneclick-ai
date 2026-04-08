@@ -143,6 +143,22 @@ impl Config {
             );
         }
 
+        // Validate Firecracker-specific paths when that runtime is selected.
+        if config.agent_runtime == "firecracker" {
+            if !std::path::Path::new(&config.fc_kernel_path).exists() {
+                anyhow::bail!(
+                    "FC_KERNEL_PATH does not exist: {}",
+                    config.fc_kernel_path
+                );
+            }
+            if !std::path::Path::new(&config.fc_rootfs_template).exists() {
+                anyhow::bail!(
+                    "FC_ROOTFS_TEMPLATE does not exist: {}",
+                    config.fc_rootfs_template
+                );
+            }
+        }
+
         Ok(config)
     }
 }

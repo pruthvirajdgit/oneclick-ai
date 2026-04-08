@@ -143,7 +143,9 @@ impl Scheduler {
             .orchestrator
             .get_agent_address(job.agent_id)
             .await
-            .unwrap_or_else(|_| container_name.to_string());
+            .map_err(|e| anyhow::anyhow!("Failed to resolve address for agent {}: {e}", job.agent_id))?;
+
+        tracing::debug!(agent_id = %job.agent_id, container_name, %agent_address, "Resolved agent address");
 
         // 2. POST the task message to the agent's chat endpoint.
         let url = format!("http://{agent_address}:3000/api/chat");

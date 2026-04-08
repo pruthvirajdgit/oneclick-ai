@@ -3,6 +3,8 @@
 Complete guide to set up the OneClick.ai development environment on macOS.
 
 > **Note:** Firecracker requires Linux with KVM and is **not supported on macOS**. This guide covers Docker runtime only. For Firecracker development, use a Linux VM or cloud instance — see `new_linux_machine.md`.
+>
+> **Compilation note:** The backend depends on `fctools` (Firecracker SDK) which uses Linux-only syscalls (`nix` crate). When `AGENT_RUNTIME=docker`, the Firecracker code paths are unused at runtime, but the crate still needs to compile. If compilation fails on macOS, you may need to use a feature flag or compile in a Linux container. This is a known limitation to be addressed in a future PR.
 
 ## Prerequisites
 

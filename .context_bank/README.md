@@ -1,6 +1,6 @@
 # OneClick.ai — Context Bank
 
-Machine-readable project context for AI agents. Three sections:
+Machine-readable project context for AI agents. Main sections:
 
 ## Structure
 
@@ -32,12 +32,12 @@ Machine-readable project context for AI agents. Three sections:
 
 ## Current State (as of Phase 3 — Firecracker integration)
 
-- **Backend**: Rust monolith (10 crates) on port 8080, runs on host (not in Docker)
+- **Backend**: Rust monolith (10 crates) on port 8080. In Firecracker mode it runs on host for KVM/TAP access; Docker Compose mode supports a containerized backend service.
 - **Frontend**: React 19 + Vite + Tailwind + shadcn/ui, served by nginx on port 80/3000
 - **Chat**: In-app WebSocket → SSE bridge pipeline with real-time token streaming
 - **Agent Runtime**: Dual — `DockerRuntime` (containers) or `FirecrackerRuntime` (microVMs), selected via `AGENT_RUNTIME` env var
 - **Firecracker**: 116ms snapshot wake, TAP networking, fctools SDK, VM-level isolation
-- **Infrastructure**: Docker Compose (frontend + postgres + redis). Backend on host.
+- **Infrastructure**: Docker Compose stack (includes backend service). Firecracker workflows run backend on host for KVM/TAP access.
 - **Next**: Production hardening — jailer security, on-disk snapshot recovery, billing
 
 ## Usage

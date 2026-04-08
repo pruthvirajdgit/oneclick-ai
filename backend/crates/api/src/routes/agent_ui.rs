@@ -41,7 +41,7 @@ pub async fn proxy_agent_ui(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Agent {agent_id} not found")))?;
 
-    let container_name = agent
+    let _container_name = agent
         .container_name
         .ok_or_else(|| AppError::Internal("Agent has no container name".into()))?;
 
@@ -50,7 +50,10 @@ pub async fn proxy_agent_ui(
         .orchestrator
         .get_agent_address(agent_id)
         .await
-        .unwrap_or(container_name);
+        .map_err(|e| {
+            tracing::warn!(agent_id = %agent_id, error = %e, "Failed to resolve agent address");
+            AppError::AgentUnavailable(format!("Failed to resolve agent address: {e}"))
+        })?;
 
     // Strip the /agent-ui/{id} prefix to get the downstream path
     let prefix = format!("/agent-ui/{agent_id}");

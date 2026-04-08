@@ -201,7 +201,7 @@ sudo chmod 777 /var/lib/oneclick/snapshots /var/lib/oneclick/vms
 
 ### G. Update `.env` for Firecracker
 
-Add/update these variables in `.env`:
+Add/update these variables in `.env` (paths are relative to the repo root):
 ```env
 AGENT_RUNTIME=firecracker
 

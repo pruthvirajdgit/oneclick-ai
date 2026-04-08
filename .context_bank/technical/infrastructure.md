@@ -86,8 +86,9 @@ destroy_agent:
 ```
 
 ### Snapshot Storage
-- **In-memory**: `VmSnapshot` held in `DashMap` for fast restore (lost on backend restart)
-- **On-disk**: `/var/lib/oneclick/snapshots/{vm_id}/` with `mem_file` + `snapshot_file`
+
+- **In-memory**: `VmSnapshot` held in `HashMap` (inside `Mutex`) for fast restore (lost on backend restart)
+- **On-disk**: `/var/lib/oneclick/snapshots/{vm_id}/` with `vm.snap` + `vm.mem`
 - Each snapshot is ~1.5GB (VM memory size). 16 VMs = ~24GB disk.
 
 ## PostgreSQL Schema

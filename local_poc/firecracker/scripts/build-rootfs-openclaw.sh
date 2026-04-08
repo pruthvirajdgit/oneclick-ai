@@ -17,7 +17,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-REPO_ROOT="$(dirname "$(dirname "$PROJECT_DIR")")"
 RESOURCES_DIR="${PROJECT_DIR}/resources"
 ROOTFS_IMG="${RESOURCES_DIR}/rootfs-openclaw.ext4"
 ROOTFS_SIZE_MB=4096
@@ -190,7 +189,7 @@ export OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-oneclick-internal}"
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1280}"
 
 [ -f /usr/local/lib/pair-device.js ] && node /usr/local/lib/pair-device.js &
-node /usr/local/bin/chat-bridge.js &
+[ -f /usr/local/bin/chat-bridge.js ] && node /usr/local/bin/chat-bridge.js &
 rm -rf /tmp/jiti 2>/dev/null
 
 exec openclaw gateway run --verbose --token "${OPENCLAW_GATEWAY_TOKEN}"

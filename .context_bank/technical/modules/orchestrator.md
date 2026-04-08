@@ -60,17 +60,23 @@ pub trait AgentRuntime: Send + Sync {
 
 ### Rootfs Config Injection
 Each VM's rootfs gets two config files written at create time:
-- `/etc/fc-network`: GUEST_IP, GUEST_CIDR, GATEWAY_IP, NAMESERVER
-- `/etc/openclaw-env`: OPENROUTER_API_KEY, OPENROUTER_BASE_URL, DEFAULT_MODEL, OPENCLAW_GATEWAY_TOKEN
+- `/etc/fc-network`: GUEST_IP, GUEST_CIDR, GATEWAY_IP (NAMESERVER is hardcoded by fc-init)
+- `/etc/openclaw-env`: OPENROUTER_API_KEY, OPENROUTER_BASE_URL, AGENT_MODEL, OPENCLAW_GATEWAY_TOKEN
 
 The init script inside the rootfs reads these at boot to configure networking and start OpenClaw.
 
 ## TapManager
 ```rust
 pub struct TapManager {
-    allocations: DashMap<String, TapAllocation>,
-    available: Mutex<VecDeque<usize>>,
-    config: TapConfig,
+    prefix: String,         // e.g. "tap"
+    subnet_prefix: String,  // e.g. "172.16"
+    count: usize,           // pool size (max 64)
+    inner: Arc<Mutex<TapManagerInner>>,
+}
+
+struct TapManagerInner {
+    slots: Vec<Option<String>>,              // pool index → Option<agent_id>
+    allocations: HashMap<String, TapAllocation>, // agent_id → TapAllocation
 }
 ```
 - Pool of tap0-tap15 (configurable via `FC_TAP_COUNT`)

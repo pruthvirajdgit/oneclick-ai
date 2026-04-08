@@ -187,7 +187,7 @@ async fn bridge_chat(
                 let body = resp.text().await.unwrap_or_default();
                 tracing::info!(
                     attempt,
-                    container = agent_address,
+                    agent_address,
                     "Bridge not ready (503: {body}), retrying in 3s..."
                 );
                 let _ =
@@ -202,7 +202,7 @@ async fn bridge_chat(
             Err(e) if attempt < 10 => {
                 tracing::info!(
                     attempt,
-                    container = agent_address,
+                    agent_address,
                     error = %e,
                     "Bridge request failed, retrying in 3s..."
                 );

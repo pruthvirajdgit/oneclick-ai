@@ -53,6 +53,14 @@ impl TapManager {
     /// Create a new TAP manager from config.
     pub fn new(config: &Config) -> Self {
         let count = config.fc_tap_count as usize;
+        // Validate: each TAP uses 4 IPs in the last two octets.
+        // With subnet_prefix like "172.16", addresses are {prefix}.{third}.{fourth}.
+        // Max safe count: (256 * 256) / 4 = 16384, but practically capped at 64
+        // to stay within a single /24 (third octet = 0).
+        assert!(
+            count <= 64,
+            "FC_TAP_COUNT must be <= 64 to fit in a /24 subnet (got {count})"
+        );
         Self {
             prefix: config.fc_tap_prefix.clone(),
             subnet_prefix: config.fc_subnet_prefix.clone(),
@@ -165,41 +173,39 @@ impl TapManager {
             .await
             .map_err(|e| format!("Failed to bring up {device}: {e}"))?;
 
-        // Enable IP forwarding and masquerade for outbound traffic
+        // Enable IP forwarding
         let _ = run_cmd("sudo", &["sysctl", "-w", "net.ipv4.ip_forward=1"]).await;
-        let _ = run_cmd(
+
+        // Detect default egress interface
+        let route_output = run_cmd("ip", &["route", "show", "default"])
+            .await
+            .unwrap_or_default();
+        let default_if = route_output
+            .split_whitespace()
+            .skip_while(|&w| w != "dev")
+            .nth(1)
+            .unwrap_or("eth0");
+
+        // Only add MASQUERADE rule if it doesn't already exist
+        let check_result = run_cmd(
             "sudo",
             &[
-                "iptables",
-                "-t",
-                "nat",
-                "-C",
-                "POSTROUTING",
-                "-o",
-                "eth0",
-                "-j",
-                "MASQUERADE",
-            ],
-        )
-        .await
-        .or_else(|_: String| -> Result<String, String> {
-            Ok(String::new())
-        });
-        let _ = run_cmd(
-            "sudo",
-            &[
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "POSTROUTING",
-                "-o",
-                "eth0",
-                "-j",
-                "MASQUERADE",
+                "iptables", "-t", "nat", "-C", "POSTROUTING",
+                "-o", default_if, "-j", "MASQUERADE",
             ],
         )
         .await;
+
+        if check_result.is_err() {
+            let _ = run_cmd(
+                "sudo",
+                &[
+                    "iptables", "-t", "nat", "-A", "POSTROUTING",
+                    "-o", default_if, "-j", "MASQUERADE",
+                ],
+            )
+            .await;
+        }
 
         info!(device, host_ip, "TAP device configured");
         Ok(())

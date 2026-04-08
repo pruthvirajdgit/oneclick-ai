@@ -255,6 +255,11 @@ async fn fc_request(
 /// Start a new Firecracker process directly (not via fctools)
 async fn start_firecracker_process() -> Result<u32> {
     let _ = tokio::fs::remove_file(SOCKET_PATH).await;
+    // Remove old log (may be root-owned from previous sudo run)
+    let _ = Command::new("sudo")
+        .args(["rm", "-f", LOG_PATH])
+        .output()
+        .await;
     tokio::fs::write(LOG_PATH, "").await?;
 
     let child = Command::new("sudo")
@@ -397,7 +402,11 @@ async fn standalone_snapshot_wake(snapshot_dir: &str) -> Result<Duration> {
         if tokio::net::UnixStream::connect(SOCKET_PATH).await.is_ok() {
             break;
         }
-        if i == 49 { bail!("Firecracker socket not ready after 5s"); }
+        if i == 49 {
+            // Socket never became ready — kill the orphaned process
+            let _ = Command::new("sudo").args(["kill", &pid.to_string()]).output().await;
+            bail!("Firecracker socket not ready after 5s");
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
@@ -410,8 +419,18 @@ async fn standalone_snapshot_wake(snapshot_dir: &str) -> Result<Duration> {
         enable_diff_snapshots: false,
         resume_vm: true,
     };
-    let (status, body) = fc_request("PUT", "/snapshot/load", Some(serde_json::to_string(&load)?)).await?;
-    if status != 204 { bail!("LoadSnapshot failed: {} {}", status, body); }
+    let result = fc_request("PUT", "/snapshot/load", Some(serde_json::to_string(&load)?)).await;
+    match result {
+        Ok((status, _body)) if status == 204 => {},
+        Ok((status, body)) => {
+            let _ = Command::new("sudo").args(["kill", &pid.to_string()]).output().await;
+            bail!("LoadSnapshot failed: {} {}", status, body);
+        }
+        Err(e) => {
+            let _ = Command::new("sudo").args(["kill", &pid.to_string()]).output().await;
+            return Err(e);
+        }
+    }
 
     Ok(start.elapsed())
 }
@@ -714,10 +733,16 @@ async fn cmd_create_start(cfg: &ProfileConfig) -> Result<()> {
     let pid = start_firecracker_process().await?;
     println!("  Firecracker process started: PID {}", pid);
 
-    configure_vm(cfg).await?;
+    if let Err(e) = configure_vm(cfg).await {
+        let _ = Command::new("sudo").args(["kill", &pid.to_string()]).output().await;
+        return Err(e);
+    }
     println!("  VM configured (kernel={}, rootfs={}, mem={}MB)", KERNEL_PATH, cfg.rootfs, cfg.mem_mib);
 
-    instance_start().await?;
+    if let Err(e) = instance_start().await {
+        let _ = Command::new("sudo").args(["kill", &pid.to_string()]).output().await;
+        return Err(e);
+    }
     println!("  InstanceStart sent ({:.0}ms)", start.elapsed().as_millis());
 
     println!("  Waiting for health check on port {}{}...", cfg.health_port, cfg.health_path);

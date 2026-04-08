@@ -421,6 +421,32 @@ impl FirecrackerRuntime {
             return Err(AppError::Internal(format!("Mount rootfs failed: {stderr}")));
         }
 
+        // From here on, always unmount on error
+        let result = self.write_rootfs_config(agent, config, alloc, &mount_dir).await;
+
+        // Always unmount
+        let umount_output = Command::new("sudo").args(["umount", &mount_dir]).output().await;
+        let _ = Command::new("sudo").args(["rm", "-rf", &mount_dir]).output().await;
+
+        if let Err(e) = &umount_output {
+            warn!(agent_id = %agent.id, error = %e, "Failed to unmount rootfs");
+        }
+
+        result?;
+        info!(agent_id = %agent.id, "Rootfs config injected");
+        Ok(())
+    }
+
+    /// Write network and environment config files into a mounted rootfs.
+    async fn write_rootfs_config(
+        &self,
+        agent: &Agent,
+        config: &Config,
+        alloc: &crate::tap_manager::TapAllocation,
+        mount_dir: &str,
+    ) -> AppResult<()> {
+        let agent_id = agent.id.to_string();
+
         // Write network config
         let fc_network = format!(
             "GUEST_IP={}\nGUEST_CIDR={}/30\nGATEWAY_IP={}\n",
@@ -430,8 +456,13 @@ impl FirecrackerRuntime {
         tokio::fs::write(&tmp_net, &fc_network).await
             .map_err(|e| AppError::Internal(format!("Write network tmp: {e}")))?;
         let net_path = format!("{}/etc/fc-network", mount_dir);
-        let _ = Command::new("sudo").args(["cp", &tmp_net, &net_path]).output().await;
+        let cp_output = Command::new("sudo").args(["cp", &tmp_net, &net_path]).output().await
+            .map_err(|e| AppError::Internal(format!("cp fc-network: {e}")))?;
         let _ = tokio::fs::remove_file(&tmp_net).await;
+        if !cp_output.status.success() {
+            let stderr = String::from_utf8_lossy(&cp_output.stderr);
+            return Err(AppError::Internal(format!("cp fc-network failed: {stderr}")));
+        }
 
         // Write environment config
         // Use proxy model with openrouter/ prefix for backend LLM proxy
@@ -476,14 +507,14 @@ export ONECLICK_INTERNAL_SECRET="{internal_secret}"
         tokio::fs::write(&tmp_env, &openclaw_env).await
             .map_err(|e| AppError::Internal(format!("Write env tmp: {e}")))?;
         let env_path = format!("{}/etc/openclaw-env", mount_dir);
-        let _ = Command::new("sudo").args(["cp", &tmp_env, &env_path]).output().await;
+        let cp_output = Command::new("sudo").args(["cp", &tmp_env, &env_path]).output().await
+            .map_err(|e| AppError::Internal(format!("cp openclaw-env: {e}")))?;
         let _ = tokio::fs::remove_file(&tmp_env).await;
+        if !cp_output.status.success() {
+            let stderr = String::from_utf8_lossy(&cp_output.stderr);
+            return Err(AppError::Internal(format!("cp openclaw-env failed: {stderr}")));
+        }
 
-        // Unmount
-        let _ = Command::new("sudo").args(["umount", &mount_dir]).output().await;
-        let _ = Command::new("sudo").args(["rm", "-rf", &mount_dir]).output().await;
-
-        info!(agent_id = %agent.id, "Rootfs config injected");
         Ok(())
     }
 }
@@ -528,7 +559,12 @@ impl AgentRuntime for FirecrackerRuntime {
             .map_err(|e| AppError::Internal(e))?;
 
         // Inject per-VM configuration into the rootfs copy
-        self.inject_rootfs_config(agent, config, &alloc).await?;
+        if let Err(err) = self.inject_rootfs_config(agent, config, &alloc).await {
+            self.tap_manager.release(&agent_id).await;
+            let _ = tokio::fs::remove_file(&rootfs_dest).await;
+            let _ = tokio::fs::remove_dir_all(&vm_dir).await;
+            return Err(err);
+        }
 
         info!(
             agent_id = %agent.id,
@@ -554,18 +590,32 @@ impl AgentRuntime for FirecrackerRuntime {
                 AppError::Internal(format!("No TAP allocation for agent {agent_id}"))
             })?;
 
-        let mut vms = self.vms.lock().await;
-
-        // Check if there's a snapshot to restore from
-        if let Some(state) = vms.get_mut(agent_id) {
-            if let Some(snapshot) = state.snapshot.take() {
-                // Restore from in-memory snapshot
-                let new_vm =
-                    self.restore_from_snapshot(agent_id, snapshot, &mut state.vm).await?;
-                state.vm = new_vm;
-                info!(agent_id, "VM restored from in-memory snapshot");
-                return Ok(());
+        // Extract snapshot and old VM from lock scope if available
+        let snapshot_and_vm = {
+            let mut vms = self.vms.lock().await;
+            if let Some(state) = vms.get_mut(agent_id) {
+                if let Some(snapshot) = state.snapshot.take() {
+                    // Take ownership of data needed for restore; VM stays in map
+                    Some(snapshot)
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+
+        if let Some(snapshot) = snapshot_and_vm {
+            // Restore from in-memory snapshot (lock dropped)
+            let mut vms = self.vms.lock().await;
+            let state = vms.get_mut(agent_id).ok_or_else(|| {
+                AppError::Internal(format!("VM state disappeared for agent {agent_id}"))
+            })?;
+            let new_vm =
+                self.restore_from_snapshot(agent_id, snapshot, &mut state.vm).await?;
+            state.vm = new_vm;
+            info!(agent_id, "VM restored from in-memory snapshot");
+            return Ok(());
         }
 
         // Check for on-disk snapshot
@@ -573,19 +623,14 @@ impl AgentRuntime for FirecrackerRuntime {
         let mem_path = self.snapshot_dir(agent_id).join("vm.mem");
 
         if snap_path.exists() && mem_path.exists() {
-            // We need a VM struct to restore from — do a cold boot config
-            // but actually load the snapshot
             info!(agent_id, "Restoring from on-disk snapshot");
-
-            // For on-disk snapshot restore, we use the raw snapshot loading
-            // since we don't have the old VmSnapshot in memory.
-            // Fall through to cold boot for now (snapshots are an optimization).
             warn!(agent_id, "On-disk snapshot found but no in-memory VmSnapshot — cold booting instead");
         }
 
-        // Cold boot
+        // Cold boot (no lock held)
         let vm = self.cold_boot(agent_id, &alloc.device, &alloc.guest_mac).await?;
 
+        let mut vms = self.vms.lock().await;
         vms.insert(agent_id.to_string(), VmState {
             vm,
             tap_device: alloc.device.clone(),
@@ -603,14 +648,21 @@ impl AgentRuntime for FirecrackerRuntime {
 
         info!(agent_id, "Stopping Firecracker VM (snapshot sleep)");
 
-        let mut vms = self.vms.lock().await;
-        let state = vms.get_mut(agent_id).ok_or_else(|| {
-            AppError::Internal(format!("No running VM for agent {agent_id}"))
-        })?;
+        // Take VM out of map to avoid holding lock during snapshot
+        let mut vm_state = {
+            let mut vms = self.vms.lock().await;
+            vms.remove(agent_id).ok_or_else(|| {
+                AppError::Internal(format!("No running VM for agent {agent_id}"))
+            })?
+        };
 
-        let snapshot = self.snapshot_and_shutdown(agent_id, &mut state.vm).await?;
-        state.snapshot = Some(snapshot);
-        state.has_snapshot_on_disk = true;
+        let snapshot = self.snapshot_and_shutdown(agent_id, &mut vm_state.vm).await?;
+        vm_state.snapshot = Some(snapshot);
+        vm_state.has_snapshot_on_disk = true;
+
+        // Put state back with snapshot
+        let mut vms = self.vms.lock().await;
+        vms.insert(agent_id.to_string(), vm_state);
 
         info!(agent_id, "VM stopped with snapshot");
         Ok(())
@@ -649,13 +701,15 @@ impl AgentRuntime for FirecrackerRuntime {
     async fn health_check(&self, container_id: &str) -> AppResult<bool> {
         let agent_id = container_id.strip_prefix("fc-").unwrap_or(container_id);
 
-        let vms = self.vms.lock().await;
-        let state = match vms.get(agent_id) {
-            Some(s) => s,
-            None => return Ok(false),
+        let guest_ip = {
+            let vms = self.vms.lock().await;
+            match vms.get(agent_id) {
+                Some(s) => s.guest_ip.clone(),
+                None => return Ok(false),
+            }
         };
 
-        let healthy = Self::probe_health(&state.guest_ip, AGENT_BRIDGE_PORT).await;
+        let healthy = Self::probe_health(&guest_ip, AGENT_BRIDGE_PORT).await;
         Ok(healthy)
     }
 
@@ -668,12 +722,14 @@ impl AgentRuntime for FirecrackerRuntime {
     async fn get_agent_address(&self, container_id: &str) -> AppResult<String> {
         let agent_id = container_id.strip_prefix("fc-").unwrap_or(container_id);
 
-        let vms = self.vms.lock().await;
-        if let Some(state) = vms.get(agent_id) {
-            return Ok(state.guest_ip.clone());
+        {
+            let vms = self.vms.lock().await;
+            if let Some(state) = vms.get(agent_id) {
+                return Ok(state.guest_ip.clone());
+            }
         }
 
-        // Fallback: get from TAP allocation
+        // Fallback: get from TAP allocation (lock already dropped)
         if let Some(alloc) = self.tap_manager.get_allocation(agent_id).await {
             return Ok(alloc.guest_ip);
         }
