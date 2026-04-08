@@ -157,6 +157,18 @@ impl Config {
                     config.fc_rootfs_template
                 );
             }
+            if config.fc_vcpu_count == 0 || config.fc_vcpu_count > 255 {
+                anyhow::bail!(
+                    "FC_VCPU_COUNT must be 1–255, got {}",
+                    config.fc_vcpu_count
+                );
+            }
+            if config.fc_tap_count == 0 || config.fc_tap_count > 64 {
+                anyhow::bail!(
+                    "FC_TAP_COUNT must be 1–64, got {}",
+                    config.fc_tap_count
+                );
+            }
         }
 
         Ok(config)

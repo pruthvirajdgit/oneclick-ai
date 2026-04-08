@@ -536,6 +536,18 @@ impl AgentRuntime for FirecrackerRuntime {
             .await
             .map_err(|e| AppError::Internal(format!("Create VM dir: {e}")))?;
 
+        // Allocate TAP device first — if this fails, only the empty dir leaks
+        let alloc = self
+            .tap_manager
+            .allocate(&agent_id)
+            .await
+            .map_err(|e| {
+                // Clean up the directory we just created
+                let dir = vm_dir.clone();
+                tokio::spawn(async move { let _ = tokio::fs::remove_dir_all(&dir).await; });
+                AppError::Internal(e)
+            })?;
+
         // Copy rootfs template (reflink if supported)
         let rootfs_dest = self.rootfs_path(&agent_id);
         let output = Command::new("cp")
@@ -548,15 +560,10 @@ impl AgentRuntime for FirecrackerRuntime {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            self.tap_manager.release(&agent_id).await;
+            let _ = tokio::fs::remove_dir_all(&vm_dir).await;
             return Err(AppError::Internal(format!("Copy rootfs failed: {stderr}")));
         }
-
-        // Allocate TAP device
-        let alloc = self
-            .tap_manager
-            .allocate(&agent_id)
-            .await
-            .map_err(|e| AppError::Internal(e))?;
 
         // Inject per-VM configuration into the rootfs copy
         if let Err(err) = self.inject_rootfs_config(agent, config, &alloc).await {
@@ -591,13 +598,14 @@ impl AgentRuntime for FirecrackerRuntime {
             })?;
 
         // Extract snapshot and old VM from lock scope if available
-        let snapshot_and_vm = {
+        let restore_data = {
             let mut vms = self.vms.lock().await;
-            if let Some(state) = vms.get_mut(agent_id) {
-                if let Some(snapshot) = state.snapshot.take() {
-                    // Take ownership of data needed for restore; VM stays in map
-                    Some(snapshot)
+            if let Some(state) = vms.remove(agent_id) {
+                if state.snapshot.is_some() {
+                    Some(state)
                 } else {
+                    // No snapshot — put it back
+                    vms.insert(agent_id.to_string(), state);
                     None
                 }
             } else {
@@ -605,17 +613,26 @@ impl AgentRuntime for FirecrackerRuntime {
             }
         };
 
-        if let Some(snapshot) = snapshot_and_vm {
-            // Restore from in-memory snapshot (lock dropped)
-            let mut vms = self.vms.lock().await;
-            let state = vms.get_mut(agent_id).ok_or_else(|| {
-                AppError::Internal(format!("VM state disappeared for agent {agent_id}"))
-            })?;
-            let new_vm =
-                self.restore_from_snapshot(agent_id, snapshot, &mut state.vm).await?;
-            state.vm = new_vm;
-            info!(agent_id, "VM restored from in-memory snapshot");
-            return Ok(());
+        if let Some(mut vm_state) = restore_data {
+            let snapshot = vm_state.snapshot.take().unwrap();
+            // Restore without holding the lock
+            match self.restore_from_snapshot(agent_id, snapshot, &mut vm_state.vm).await {
+                Ok(new_vm) => {
+                    vm_state.vm = new_vm;
+                    vm_state.snapshot = None;
+                    let mut vms = self.vms.lock().await;
+                    vms.insert(agent_id.to_string(), vm_state);
+                    info!(agent_id, "VM restored from in-memory snapshot");
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Reinsert so we don't lose the VM state
+                    warn!(agent_id, error = %e, "Snapshot restore failed, reinserting state");
+                    let mut vms = self.vms.lock().await;
+                    vms.insert(agent_id.to_string(), vm_state);
+                    return Err(e);
+                }
+            }
         }
 
         // Check for on-disk snapshot
@@ -656,16 +673,23 @@ impl AgentRuntime for FirecrackerRuntime {
             })?
         };
 
-        let snapshot = self.snapshot_and_shutdown(agent_id, &mut vm_state.vm).await?;
-        vm_state.snapshot = Some(snapshot);
-        vm_state.has_snapshot_on_disk = true;
-
-        // Put state back with snapshot
-        let mut vms = self.vms.lock().await;
-        vms.insert(agent_id.to_string(), vm_state);
-
-        info!(agent_id, "VM stopped with snapshot");
-        Ok(())
+        match self.snapshot_and_shutdown(agent_id, &mut vm_state.vm).await {
+            Ok(snapshot) => {
+                vm_state.snapshot = Some(snapshot);
+                vm_state.has_snapshot_on_disk = true;
+                let mut vms = self.vms.lock().await;
+                vms.insert(agent_id.to_string(), vm_state);
+                info!(agent_id, "VM stopped with snapshot");
+                Ok(())
+            }
+            Err(e) => {
+                // Reinsert so the VM isn't lost from bookkeeping
+                warn!(agent_id, error = %e, "Snapshot failed, reinserting VM state");
+                let mut vms = self.vms.lock().await;
+                vms.insert(agent_id.to_string(), vm_state);
+                Err(e)
+            }
+        }
     }
 
     async fn destroy_agent(&self, container_id: &str) -> AppResult<()> {

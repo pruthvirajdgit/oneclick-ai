@@ -149,6 +149,10 @@ impl Orchestrator {
 
         if !healthy {
             error!(agent_id = %agent_id, "Agent failed health check after wake");
+            // Stop the VM so it doesn't leak resources
+            if let Err(e) = self.runtime.stop_agent(container_id).await {
+                warn!(agent_id = %agent_id, error = %e, "Failed to stop unhealthy agent");
+            }
             self.update_status(agent_id, AgentStatus::Error).await?;
             return Err(AppError::AgentUnavailable(
                 "Agent did not become healthy after start".into(),
