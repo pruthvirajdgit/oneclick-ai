@@ -159,8 +159,8 @@ impl TestApp {
             .clone();
 
         // Docker client — not used by any route handler but required by AppState.
-        // connect_with_local_defaults() always succeeds (connection is lazy).
-        let docker = bollard::Docker::connect_with_local_defaults()
+        // Use connect_with_http to avoid needing /var/run/docker.sock on the host.
+        let docker = bollard::Docker::connect_with_http_defaults()
             .expect("Docker client creation should not fail");
 
         let state = AppState {
