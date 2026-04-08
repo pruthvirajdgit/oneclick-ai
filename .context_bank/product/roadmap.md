@@ -48,21 +48,36 @@ Browser WS → Backend (chat.rs) → HTTP POST → chat-bridge.js:3001
          WS chunks → Browser               LLM response (SSE)
 ```
 
-## Phase 3 — Firecracker + Optimization (Next)
-**Goal:** <200ms wake, VM isolation, local disk snapshots. Then monetize.
-**Planned:**
-- Custom Linux rootfs (minimal image with Node.js + OpenClaw)
-- Stripped-down Linux kernel for Firecracker
-- FirecrackerRuntime (same AgentRuntime trait interface)
-- TAP networking (each VM gets a tap interface + NAT)
-- Native VM snapshotting (CreateSnapshot/LoadSnapshot — no CRIU needed)
-- Jailer + security (Firecracker jailer for prod isolation)
-- Stripe billing (free → pro upgrade flow)
-- Multi-region deployment (snapshot restore at edge)
-- Cost tracking per model ($)
+## Phase 3 — Firecracker MicroVMs ✅
+**Goal:** <200ms wake, VM isolation, local disk snapshots.
+**Delivered:**
+- `FirecrackerRuntime` implementing `AgentRuntime` trait (fctools 0.7.0-alpha.1)
+- TAP network manager — pool of 16 TAP devices with /30 subnets
+- VM snapshot/restore lifecycle (sleep → snapshot, wake → restore)
+- Rootfs template system — parameterized OpenClaw rootfs with per-VM config injection
+- `get_agent_address()` trait method — unified agent addressing (container IP or TAP IP)
+- Runtime selector: `AGENT_RUNTIME=docker|firecracker` env var
+- Sleep endpoint: `POST /api/agents/:id/sleep`
+- Backend runs on host for both runtimes (deployment refactor)
+- Full E2E verified: signup → create → wake (1.1s) → chat → sleep (11.9s) → wake from snapshot (116ms) → chat → delete
 
-### Key Decision: Skip CRIU
-Firecracker has native VM snapshotting (~125ms restore). CRIU adds complexity (PID namespace issues, file descriptor leaks) for marginal benefit. Skip directly from Docker to Firecracker.
+**Performance:**
+- Cold boot to health check: ~1.1s
+- Snapshot restore to running: ~116ms 🚀
+- Gateway ready for chat after cold boot: ~26s
+- Snapshot save (sleep): ~11.9s
+
+**Not in Phase 3:** Jailer security hardening, on-disk snapshot recovery after backend restart, billing, multi-region.
+
+## Phase 4 — Monetization + Hardening (Next)
+**Goal:** Production-ready with billing, security hardening, and operational reliability.
+**Planned:**
+- Firecracker jailer (chroot, seccomp, cgroups isolation)
+- On-disk snapshot recovery (survive backend restarts)
+- Stripe billing (free → pro upgrade flow)
+- Cost tracking per model ($)
+- Multi-region deployment (snapshot portability to S3)
+- Conversation memory persistence across snapshot cycles
 
 ## Ideas Explored and Parked
 

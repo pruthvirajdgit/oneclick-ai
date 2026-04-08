@@ -66,3 +66,18 @@ Condensed ADRs. Each records what was decided, the strongest reason, and what wa
 **Decided:** `check_rate_limit` is a read-only Redis GET before the request; `increment_rate_limit` is a Redis INCR after success only.
 **Why:** Prevents counting failed or errored LLM requests toward the user's daily limit. Failed requests should not penalize users.
 **Rejected:** Single atomic INCR before request (penalizes users on provider failures).
+
+## TD-014: Backend on Host (Not in Docker)
+**Decided:** Backend runs on the host regardless of runtime (Docker or Firecracker). Frontend + postgres + redis stay in Docker.
+**Why:** Firecracker needs /dev/kvm and TAP device access. Even for Docker runtime, running on host mimics production topology. Agent containers are reached by bridge IP (Docker) or TAP IP (Firecracker) — both routable from host.
+**Rejected:** Privileged Docker container (defeats isolation), sidecar daemon (extra service to maintain).
+
+## TD-015: Firecracker with fctools SDK (Not Raw HTTP)
+**Decided:** Use fctools 0.7.0-alpha.1 Rust SDK for all Firecracker operations in the production backend.
+**Why:** fctools handles VM lifecycle, socket management, and snapshot/restore in a type-safe way. The PoC used a hybrid approach (raw HTTP for standalone CLI, fctools for in-process), but the production backend is long-lived, making fctools ideal.
+**Rejected:** Raw HTTP over Unix socket (used in PoC CLI for cross-process compatibility, unnecessary in long-lived backend).
+
+## TD-016: Skip CRIU, Docker→Firecracker Direct
+**Decided:** Skip CRIU checkpoint/restore entirely. Go directly from Docker stop/start to Firecracker snapshots.
+**Why:** Firecracker has native VM snapshotting (~116ms restore). CRIU adds complexity (PID namespace issues, file descriptor leaks) for marginal benefit over Docker stop/start.
+**Rejected:** CRIU (complex, fragile, only 1-2s improvement over Docker).
