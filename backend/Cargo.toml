@@ -114,3 +114,4 @@ tower.workspace = true
 deadpool-redis.workspace = true
 uuid.workspace = true
 metrics-exporter-prometheus.workspace = true
+bollard.workspace = true
