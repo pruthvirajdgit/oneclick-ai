@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use fctools::{
-    process_spawner::SudoProcessSpawner,
+    process_spawner::DirectProcessSpawner,
     runtime::tokio::TokioRuntime,
     vm::{
         Vm,
@@ -53,7 +53,7 @@ use oneclick_shared::models::agent::Agent;
 use crate::runtime::AgentRuntime;
 use crate::tap_manager::TapManager;
 
-type FcVm = Vm<UnrestrictedVmmExecutor, SudoProcessSpawner, TokioRuntime>;
+type FcVm = Vm<UnrestrictedVmmExecutor, DirectProcessSpawner, TokioRuntime>;
 
 const BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/fc-init";
 const FC_BIN: &str = "/usr/local/bin/firecracker";
@@ -95,8 +95,8 @@ impl FirecrackerRuntime {
         VmmInstallation::new(FC_BIN, JAILER_BIN, SNAP_EDITOR_BIN)
     }
 
-    fn spawner() -> SudoProcessSpawner {
-        SudoProcessSpawner::new(None, None)
+    fn spawner() -> DirectProcessSpawner {
+        DirectProcessSpawner
     }
 
     fn executor(socket_path: &str) -> UnrestrictedVmmExecutor {
@@ -104,7 +104,7 @@ impl FirecrackerRuntime {
         UnrestrictedVmmExecutor::new(args)
     }
 
-    fn resource_system() -> ResourceSystem<SudoProcessSpawner, TokioRuntime> {
+    fn resource_system() -> ResourceSystem<DirectProcessSpawner, TokioRuntime> {
         ResourceSystem::new(
             Self::spawner(),
             TokioRuntime,
@@ -135,7 +135,7 @@ impl FirecrackerRuntime {
         agent_id: &str,
         tap_device: &str,
         guest_mac: &str,
-        resource_system: &mut ResourceSystem<SudoProcessSpawner, TokioRuntime>,
+        resource_system: &mut ResourceSystem<DirectProcessSpawner, TokioRuntime>,
     ) -> AppResult<VmConfigurationData> {
         let kernel = resource_system
             .create_resource(

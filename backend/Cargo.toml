@@ -61,6 +61,7 @@ fctools = { version = "0.7.0-alpha.1", features = [
     "vm",
     "unrestricted-vmm-executor",
     "elevation-process-spawners",
+    "direct-process-spawner",
     "tokio-runtime",
     "nix-syscall-backend",
 ] }
