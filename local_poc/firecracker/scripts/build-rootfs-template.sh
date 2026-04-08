@@ -166,7 +166,7 @@ if [ -n "${OPENROUTER_BASE_URL:-}" ]; then
       "models": {"${MODEL_NAME}": {}},
       "workspace": "/home/node/workspace",
       "bootstrapMaxChars": 200,
-      "contextTokens": 16384
+      "contextTokens": 65536
     }
   },
   "models": {
@@ -216,7 +216,7 @@ elif [ -n "${GROQ_API_KEY:-}" ]; then
       "models": {"${MODEL_NAME}": {}},
       "workspace": "/home/node/workspace",
       "bootstrapMaxChars": 200,
-      "contextTokens": 16384
+      "contextTokens": 65536
     }
   },
   "models": {
