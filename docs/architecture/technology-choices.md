@@ -93,7 +93,7 @@ oneclick-ai/
 │   │   └── agent-tools/        # OpenClaw plugin definitions
 │   ├── migrations/             # PostgreSQL schema
 │   └── tests/                  # e2e_workflow.rs (mock) + e2e_firecracker.rs (live)
-├── agent-runtime/              # Custom OpenClaw agent Docker image
+├── oneclick-runtime/              # Custom OpenClaw agent Docker image
 ├── scripts/
 │   ├── setup/clean_setup.sh    # Full machine setup (generates .env)
 │   ├── server/start.sh         # Start Docker + backend

@@ -108,7 +108,7 @@ docker compose ps   # postgres and redis should show "healthy"
 ## 7. Build the Agent Docker Image
 
 ```bash
-cd agent-runtime
+cd oneclick-runtime
 docker build -t oneclick-agent:latest .
 cd ..
 ```

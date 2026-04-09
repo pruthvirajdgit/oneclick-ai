@@ -193,7 +193,7 @@ oneclick-ai/
 │   │   └── webhook-receiver/   # Stub for Telegram/Slack integration
 │   ├── migrations/             # 6 sqlx migration files
 │   └── tests/                  # Integration + E2E tests
-├── agent-runtime/              # Custom OpenClaw agent image
+├── oneclick-runtime/              # Custom OpenClaw agent image
 │   ├── Dockerfile              # Extends ghcr.io/openclaw/openclaw:latest
 │   ├── chat-bridge.js          # HTTP→WebSocket bridge (port 3001)
 │   ├── pair-device.js          # Auto-approve device pairing

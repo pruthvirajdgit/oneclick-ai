@@ -119,7 +119,7 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 ```
 
 ## Agent Containers (Docker Runtime)
-- Image: `oneclick-agent:latest` (custom OpenClaw build from `agent-runtime/Dockerfile`)
+- Image: `oneclick-agent:latest` (custom OpenClaw build from `oneclick-runtime/Dockerfile`)
 - Memory: 4GB default (configurable via `AGENT_MEMORY_LIMIT`). OpenClaw startup peak exceeds 2GB; steady state ~500MB.
 - CPU: 0.5 cores (configurable via `AGENT_CPU_LIMIT`)
 - Network: `oneclick-net`

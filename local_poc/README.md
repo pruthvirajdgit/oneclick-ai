@@ -6,7 +6,7 @@ This directory contains the **original proof-of-concept** code from early projec
 
 | Directory/File | Purpose |
 |---------------|---------|
-| `agent-runtime/` | Custom OpenClaw Docker image + compose files for local testing |
+| `oneclick-runtime/` | Custom OpenClaw Docker image + compose files for local testing |
 | `scripts/` | Shell scripts for agent lifecycle (start/stop/restart) |
 | `start.sh` | One-click setup script |
 

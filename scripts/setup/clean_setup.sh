@@ -189,7 +189,7 @@ echo "🏗️  [7/8] Building agent image and rootfs..."
 
 # Build agent Docker image
 echo "   Building oneclick-agent:latest Docker image..."
-docker build -t oneclick-agent:latest "$REPO_DIR/agent-runtime" -q
+docker build -t oneclick-agent:latest "$REPO_DIR/oneclick-runtime" -q
 
 # Build rootfs template
 echo "   Building rootfs template (this takes a few minutes)..."

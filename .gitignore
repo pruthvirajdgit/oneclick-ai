@@ -1,10 +1,10 @@
 # Environment files with secrets
 .env
-agent-runtime/.env
+oneclick-runtime/.env
 
 # Docker volumes (local data)
-agent-runtime/docs/*.pdf
-agent-runtime/docs/*.docx
+oneclick-runtime/docs/*.pdf
+oneclick-runtime/docs/*.docx
 
 # OS files
 .DS_Store

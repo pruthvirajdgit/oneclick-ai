@@ -71,7 +71,7 @@ bash scripts/teardown-network.sh tap0
 
 ```bash
 # 1. Build the Docker agent image first (from repo root)
-cd /path/to/oneclick-ai && docker compose build agent-runtime
+cd /path/to/oneclick-ai && docker compose build oneclick-runtime
 
 # 2. Build OpenClaw rootfs (exports Docker image → ext4)
 source .env  # needs GROQ_API_KEY

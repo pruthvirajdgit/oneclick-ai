@@ -5,7 +5,7 @@
 # Clone → create .env with your OpenRouter key → run this script. That's it.
 #
 #   git clone <repo> && cd oneclick-ai
-#   cp agent-runtime/.env.example agent-runtime/.env
+#   cp oneclick-runtime/.env.example oneclick-runtime/.env
 #   # Edit .env → paste your OpenRouter API key
 #   ./start.sh
 #
@@ -31,7 +31,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RUNTIME_DIR="${PROJECT_DIR}/agent-runtime"
+RUNTIME_DIR="${PROJECT_DIR}/oneclick-runtime"
 
 header() {
     echo ""
@@ -177,7 +177,7 @@ setup_env() {
 
     if [ -z "$API_KEY" ]; then
         error "No API key provided."
-        echo "    Edit agent-runtime/.env and add your OPENROUTER_API_KEY, then re-run."
+        echo "    Edit oneclick-runtime/.env and add your OPENROUTER_API_KEY, then re-run."
         exit 1
     fi
 

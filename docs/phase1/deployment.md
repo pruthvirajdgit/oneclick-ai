@@ -59,7 +59,7 @@ docker compose up -d --build frontend
 cd backend && cargo build --release
 
 # Build agent Docker image (for rootfs template)
-docker build -t oneclick-agent:latest agent-runtime/
+docker build -t oneclick-agent:latest oneclick-runtime/
 
 # Rebuild rootfs template after agent image changes
 sudo bash scripts/firecracker/build-rootfs.sh
