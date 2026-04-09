@@ -2,7 +2,7 @@
 
 **Your AI Workforce. One Click.**
 
-Open-source infrastructure for deploying and managing AI employees within your organization. Clone, configure, run — every team member gets a personal AI agent that works 24/7, executes tasks on schedule, and costs nothing when idle.
+Open-source MicroVM based infrastructure for deploying and managing AI employees within your organization. Clone, configure, run — every team member gets a personal AI agent that works 24/7, executes tasks on schedule, and costs nothing when idle.
 
 ---
 
@@ -33,11 +33,15 @@ Monitor token usage per agent — daily and all-time stats, rate limits, and cos
 
 ## Why OneClick.ai?
 
+Keeping an AI agent constantly running is **expensive and wasteful**. Most agents sit idle 90%+ of the time — burning CPU, RAM, and money while waiting for the next interaction. Cloud-hosted agent platforms charge you for that idle time. Self-hosted solutions leave VMs running 24/7.
+
+**OneClick.ai solves this with Firecracker microVMs and snapshot-based hibernation.** When an agent isn't being used, we snapshot its entire memory state and shut down the VM — zero CPU, zero RAM. When a user comes back, we restore the snapshot and the agent picks up exactly where it left off, in under a second. You only pay for compute when agents are actually working.
+
 | Problem | Solution |
 |---------|----------|
-| AI assistants are stateless (ChatGPT forgets everything) | Agents persist state, memory, and context across sessions |
+| Running AI agents 24/7 is expensive | **Snapshot & sleep**: idle agents use 0 CPU/RAM, restore in <1s |
+| AI assistants are stateless (ChatGPT forgets everything) | Agents persist state, memory, and context across sessions via microVM snapshots |
 | Setting up AI agents requires deep technical knowledge | One setup script — done |
-| Running AI agents 24/7 is expensive | Scale-to-zero: sleeping agents use 0 CPU/RAM |
 | LLM API keys scattered across tools | Centralized LLM proxy with usage tracking and rate limiting |
 | No scheduling or automation | Built-in cron scheduler — agents execute tasks while you sleep |
 
