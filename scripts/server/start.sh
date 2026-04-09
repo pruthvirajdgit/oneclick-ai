@@ -7,7 +7,7 @@ echo "🚀 Starting OneClick.ai..."
 
 # 1. Start postgres, redis, frontend in Docker
 echo "📦 Starting Docker services (postgres, redis, frontend)..."
-sudo docker compose up -d --quiet-pull 2>&1 | tail -n 5
+sudo docker compose up -d --build --quiet-pull 2>&1 | tail -n 5
 
 # 2. Wait for postgres to be ready
 echo "⏳ Waiting for PostgreSQL..."
