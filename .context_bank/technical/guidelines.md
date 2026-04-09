@@ -79,8 +79,11 @@ notifications ← api (alerts)
 
 ### Testing
 - Unit tests in the same file, inside `#[cfg(test)] mod tests {}`.
-- Integration tests in `backend/tests/` with `#[cfg(feature = "integration")]`.
-- `MockRuntime` (implements `AgentRuntime`) for testing without Docker.
+- 12 mock E2E tests in `backend/tests/e2e_workflow.rs` — `#[cfg(feature = "integration")]`, uses `MockRuntime`.
+- 5 live Firecracker E2E tests in `backend/tests/e2e_firecracker.rs` — `#[cfg(feature = "firecracker")]`, requires running backend.
+  - Tests: preflight, full_lifecycle, wake_idempotent, sleep_idempotent, multi_user_isolation
+  - Run: `cargo test --features firecracker --test e2e_firecracker -- --test-threads=1`
+- `MockRuntime` (implements `AgentRuntime`) for testing without Docker or Firecracker.
 - `TestApp` helper builds the full router with mock runtime.
 
 ## PR & Git Rules

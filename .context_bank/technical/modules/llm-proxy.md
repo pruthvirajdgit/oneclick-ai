@@ -18,7 +18,7 @@
 ```
 1. Groq: llama-3.3-70b-versatile  (1,000 req/day, best quality)
 2. Groq: llama-3.1-8b-instant     (14,400 req/day, good quality)
-3. OpenRouter: nemotron-70b:free   (50 req/day, last resort)
+3. OpenRouter: free model           (last resort)
 ```
 
 ## LlmProxy Service
@@ -43,7 +43,7 @@ For each provider, for each model: try request. On 429 → warn + next. On error
 
 ### Request Processing
 - `stream: false` is forced on all outgoing requests to ensure parseable JSON responses
-- `truncate_messages(messages, MAX_MESSAGE_CHARS)` truncates content to stay within Groq's 12K TPM limit (`MAX_MESSAGE_CHARS = 8000` chars). Uses `floor_char_boundary` for UTF-8 safe truncation.
+- `truncate_messages(messages, MAX_MESSAGE_CHARS)` truncates content to stay within context limits (`MAX_MESSAGE_CHARS = 200,000` chars, increased from 8000 to support full context). Uses `floor_char_boundary` for UTF-8 safe truncation.
 - Raw response body logged at `trace` level only (PII protection)
 
 ## Types (OpenAI-Compatible)

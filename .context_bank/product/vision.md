@@ -8,7 +8,7 @@ Non-technical users want AI assistants that can do real work — monitor flights
 
 ## Solution
 A SaaS where users sign up, get a personal AI agent in seconds, and interact via chat. The agent:
-- Runs 24/7 in a sandboxed container
+- Runs 24/7 in a sandboxed environment (Docker container or Firecracker microVM)
 - Accepts tasks via natural conversation ("check flights to Bangalore every 3 hours")
 - Executes scheduled tasks autonomously, even when the user is offline
 - Sends notifications when tasks complete

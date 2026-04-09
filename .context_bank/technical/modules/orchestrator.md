@@ -64,6 +64,13 @@ TAP allocations are held in-memory (`TapManager.allocations` HashMap). After a b
 ### Known Limitation
 After backend restart, agent DB status may show `running` but no VM exists. The stale status must be corrected (reset to `stopped`) before wake will work. Future improvement: on startup, scan `running` agents and verify VM existence.
 
+### Orphan Cleanup
+Pre-boot: checks for stale Firecracker API socket from a previous run; removes it if found.
+Post-failure: if VM boot fails, ensures the Firecracker process is shut down to prevent orphan processes.
+
+### KVM Permissions
+Requires `/dev/kvm` with mode `0666`. Setup via udev rule: `KERNEL=="kvm", MODE="0666"`.
+
 ### Rootfs Config Injection
 Each VM's rootfs gets two config files written at create time:
 - `/etc/fc-network`: GUEST_IP, GUEST_CIDR, GATEWAY_IP (NAMESERVER is hardcoded by fc-init)
@@ -85,7 +92,7 @@ struct TapManagerInner {
     allocations: HashMap<String, TapAllocation>, // agent_id → TapAllocation
 }
 ```
-- Pool of tap0-tap15 (configurable via `FC_TAP_COUNT`)
+- Pool of TAP devices (default 4, configurable via `FC_TAP_COUNT`)
 - IP scheme: host=172.16.0.{i*4+1}, guest=172.16.0.{i*4+2}, /30 subnet
 - MAC: AA:FC:00:00:00:{index_hex}
 - Creates TAP device + assigns IP + iptables masquerade on allocate

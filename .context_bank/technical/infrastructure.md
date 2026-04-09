@@ -43,15 +43,14 @@ Note: Backend is **not** in docker-compose. It runs directly on the host.
 - Redis: `redis-cli ping` every 5s
 
 ### Overrides
-- `docker-compose.override.yml`: Dev — exposed ports, debug config
-- `docker-compose.prod.yml`: Prod overlay — TLS, Docker socket `:ro`, `DOMAIN` + `ACME_EMAIL` required
+- `docker-compose.prod.yml`: Prod overlay — hides DB ports (no Traefik, no TLS termination in Docker)
 
 ## Firecracker Runtime
 
 ### Components
 - **Firecracker v1.12.0**: MicroVM hypervisor, runs on host with KVM
 - **fctools 0.7.0-alpha.1**: Rust SDK for Firecracker API
-- **TAP Manager**: Pool of tap0-tap15, managed by backend
+- **TAP Manager**: Pool of TAP devices (default 4, configurable via `FC_TAP_COUNT`), managed by backend
 - **Kernel**: vmlinux-6.1 (must be 6.1, not 5.10 — MMIO probe errors on 5.10)
 - **Rootfs template**: 4GB ext4 with OpenClaw + Node.js + chat-bridge.js
 
@@ -91,7 +90,7 @@ destroy_agent:
 
 - **In-memory**: `VmSnapshot` held in `HashMap` (inside `Mutex`) for fast restore (lost on backend restart)
 - **On-disk**: `/var/lib/oneclick/snapshots/{vm_id}/` with `vm.snap` + `vm.mem`
-- Each snapshot is ~1.5GB (VM memory size). 16 VMs = ~24GB disk.
+- Each snapshot is ~1.5GB (VM memory size). Storage scales with `FC_TAP_COUNT` (default 4 = ~6GB).
 
 ## PostgreSQL Schema
 
@@ -149,7 +148,7 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 ### OpenClaw Runtime Details
 - Binary: `/usr/local/bin/openclaw` (Node.js, requires v22.12+)
 - Base image: `ghcr.io/openclaw/openclaw:latest` (Debian 12 bookworm, runs as `node` UID 1000)
-- Config: `~/.openclaw/openclaw.json` (generated from env vars by `entrypoint.sh`). Includes `openrouter` provider pointing to backend proxy and `controlUi.allowedOrigins: ["*"]` (dev only).
+- Config: `~/.openclaw/openclaw.json` (generated from env vars by `entrypoint.sh`). Includes `openrouter` provider pointing to backend proxy, `contextTokens: 65536`, and `controlUi.allowedOrigins: ["*"]` (dev only).
 - Gateway: `openclaw gateway run --verbose --token $TOKEN` (foreground, port 3000)
 - Auth: Required for non-loopback binding. Modes: `none`, `token`, `password`
 - Health: `openclaw health` CLI or HTTP health endpoint
@@ -192,7 +191,7 @@ FC_SNAPSHOT_DIR       /var/lib/oneclick/snapshots
 FC_VM_DIR             /var/lib/oneclick/vms
 FC_VCPU_COUNT         2
 FC_MEM_SIZE_MIB       1536
-FC_TAP_COUNT          16
+FC_TAP_COUNT          4
 
 # Optional (have defaults)
 REDIS_URL             redis://localhost:6379
@@ -201,30 +200,33 @@ MAX_AGENTS            100
 FREE_TIER_DAILY_LIMIT 50
 IDLE_TIMEOUT_MINUTES  15
 
-# Prod only
-DOMAIN                yourdomain.com
-ACME_EMAIL            admin@yourdomain.com
+# Logging
+LOG_DIR               logs/
+RUST_LOG              info,oneclick_shared=warn
 ```
 
 ## Deployment
 
 ### Local Dev
 ```bash
+# Full setup from scratch (generates .env, installs everything)
+sudo ./scripts/setup/clean_setup.sh
+
+# Start all services (docker compose up + backend)
+./scripts/server/start.sh
+
+# Stop everything (kill backend + FC VMs + docker compose down)
+./scripts/server/stop.sh
+
+# Manual alternative:
 cp .env.example .env  # fill in API keys
-
-# Start infrastructure
-docker compose up -d postgres redis
-
-# Build agent image (needed for Docker runtime or rootfs template)
-cd agent-runtime && docker build -t oneclick-agent:latest . && cd ..
+docker compose up -d  # frontend + postgres + redis
+cd backend && cargo run --release  # backend on host
 
 # For Firecracker: build rootfs template
-cd local_poc/firecracker && sudo bash scripts/build-rootfs-template.sh && cd ../..
+sudo ./scripts/firecracker/build-rootfs.sh
 
-# Run backend on host
-cd backend && cargo run --release
-
-# Frontend at http://localhost:3000 (if running frontend container)
+# Frontend at http://localhost:3000
 # Swagger UI at http://localhost:8080/swagger-ui/
 ```
 

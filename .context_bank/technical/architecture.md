@@ -86,7 +86,7 @@ pub trait AgentRuntime: Send + Sync {
 | Aspect | DockerRuntime | FirecrackerRuntime |
 |--------|--------------|-------------------|
 | Isolation | Container (cgroups/namespaces) | MicroVM (KVM hardware) |
-| Cold boot | ~5-7 min (gateway JIT) | ~1.1s (VM boot) + ~40-60s (gateway) |
+| Cold boot | ~5-7 min (gateway JIT) | ~3s (VM boot to healthy) + ~40s (gateway JIT) |
 | Wake from sleep | ~5-10s (docker start) | **~400ms** (snapshot restore) |
 | Sleep | docker stop (10s grace) | Pause → snapshot → shutdown (~11s) |
 | Networking | Docker bridge, container IP | TAP devices, /30 subnets |
@@ -113,7 +113,7 @@ pub trait AgentRuntime: Send + Sync {
 ## Data Flow: Scheduled Job Executes
 1. Scheduler polls every 60s: `SELECT * FROM scheduled_jobs WHERE status='active' AND next_run_at <= NOW()`
 2. For each due job: Orchestrator wakes agent (`ensure_ready`)
-3. Scheduler sends task: `POST http://agent-{name}:3000/api/chat` with `job.task_message`
+3. Scheduler sends task via `get_agent_address()` — `POST http://{agent_ip}:3000/api/chat` with `job.task_message`
 4. Agent executes, may call `send_notification` tool → `POST /internal/notifications`
 5. Scheduler updates `last_run_at` and computes `next_run_at` from cron expression
 6. After 15 min idle, Monitor stops the agent

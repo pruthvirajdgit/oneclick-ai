@@ -79,11 +79,11 @@ Decisions are numbered. Each includes what was decided, why, and what alternativ
 ---
 
 ## PD-009: Agent State Persists Across Sleep
-**Decision:** When an agent is stopped (scale-to-zero), its state persists on disk via Docker volumes. When woken, it resumes with full conversation history.
+**Decision:** When an agent is stopped (scale-to-zero), its state persists on disk. Docker runtime uses volumes; Firecracker runtime uses rootfs + memory snapshots. When woken, it resumes with full conversation history.
 
-**Why:** Users expect their agent to "remember" previous conversations. OpenClaw stores state in `/home/node/.openclaw/` which survives `docker stop/start`.
+**Why:** Users expect their agent to "remember" previous conversations. OpenClaw stores state in `/home/node/.openclaw/` which survives sleep/wake cycles in both runtimes.
 
-**Limitation:** In-memory caches are lost. LLM conversation context is reloaded from disk. Phase 2 (CRIU) will give 100% memory fidelity.
+**Firecracker advantage:** VM memory snapshots provide near-instant restore (~400ms) with full in-memory state fidelity. No cold JIT penalty on snapshot wake.
 
 ---
 

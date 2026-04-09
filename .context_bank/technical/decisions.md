@@ -16,7 +16,7 @@ Condensed ADRs. Each records what was decided, the strongest reason, and what wa
 **Decided:** `docker stop` idle agents, `docker start` on demand. 5-10s cold start.
 **Why:** 95% RAM savings (50GB → 2.5GB for 100 users). OpenClaw state persists on Docker volumes.
 **Rejected:** Always-on (too expensive), Firecracker snapshots (too much infra work for Phase 1).
-**Evolution:** Phase 2 = CRIU (1-2s), Phase 3 = Firecracker (<200ms).
+**Evolution:** CRIU was skipped (see TD-016). Phase 3 = Firecracker (~400ms snapshot wake) — done and working.
 
 ## TD-004: External Scheduler (Not In-Agent Cron)
 **Decided:** Scheduler runs in the always-on backend, not inside agent containers.
@@ -34,12 +34,12 @@ Condensed ADRs. Each records what was decided, the strongest reason, and what wa
 **Reconsider when:** 10+ providers or complex A/B testing.
 
 ## TD-007: No Firecracker in Phase 1
-**Decided:** Docker for Phase 1. Firecracker designed in but not implemented.
+**Decided:** Docker for Phase 1. Firecracker designed in but deferred.
 **Why:** Firecracker requires building kernel, rootfs, networking, orchestration from scratch. Docker is proven and sufficient for 100 users. 5-10s cold start is acceptable.
-**Phase 3 value:** Snapshot portability to S3, multi-region, <200ms restore, hardware isolation.
+**Status:** Implemented in Phase 3. `FirecrackerRuntime` is done and working. ~400ms snapshot wake, ~3s cold boot, TAP networking, fctools SDK.
 
 ## TD-008: Groq (Primary) + OpenRouter (Fallback)
-**Decided:** Ordered fallback: Groq Llama 3.3 70B → Groq Llama 3.1 8B → OpenRouter Nemotron.
+**Decided:** Ordered fallback: Groq llama-3.3-70b-versatile → Groq llama-3.1-8b-instant → OpenRouter free model.
 **Why:** ~15,450 free req/day. Groq is fastest (custom LPU hardware). No credit card needed.
 **Rejected:** Google Gemini (free tier slashed to 20/day), self-hosted Ollama (217s per response on CPU).
 

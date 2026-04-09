@@ -30,14 +30,15 @@ Machine-readable project context for AI agents. Main sections:
         └── webhook-receiver.md        # Inbound integrations (stub)
 ```
 
-## Current State (as of Phase 3 — Firecracker integration)
+## Current State
 
-- **Backend**: Rust monolith (10 crates) on port 8080. In Firecracker mode it runs on host for KVM/TAP access; Docker Compose mode supports a containerized backend service.
+- **Backend**: Rust monolith (10 crates) on port 8080. Runs on host (bare metal) — never containerized. Needs direct KVM access for Firecracker.
 - **Frontend**: React 19 + Vite + Tailwind + shadcn/ui, served by nginx on port 80/3000
 - **Chat**: In-app WebSocket → SSE bridge pipeline with real-time token streaming
 - **Agent Runtime**: Dual — `DockerRuntime` (containers) or `FirecrackerRuntime` (microVMs), selected via `AGENT_RUNTIME` env var
-- **Firecracker**: 116ms snapshot wake, TAP networking, fctools SDK, VM-level isolation
-- **Infrastructure**: Docker Compose stack (includes backend service). Firecracker workflows run backend on host for KVM/TAP access.
+- **Firecracker**: ~400ms snapshot wake, ~3s cold boot, TAP networking, fctools SDK, VM-level isolation
+- **Infrastructure**: Docker Compose (frontend + PostgreSQL + Redis). Backend runs on host.
+- **Logging**: Dual output (JSON to stdout + daily rotating files in `logs/`), tracing-appender
 - **Next**: Production hardening — jailer security, on-disk snapshot recovery, billing
 
 ## Usage
