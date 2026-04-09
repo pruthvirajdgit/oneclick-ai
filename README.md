@@ -6,6 +6,22 @@ Open-source MicroVM based infrastructure for deploying and managing AI employees
 
 ---
 
+## 🧠 AI-Native Repository
+
+This is an **AI-native repository** — designed from the ground up for AI agents to understand, navigate, and contribute to.
+
+The [`.context_bank/`](.context_bank/README.md) directory is the single source of truth for any AI agent working on this codebase. It contains:
+
+- **Architecture** — system design, service topology, data flow
+- **Module documentation** — API routes, orchestrator internals, LLM proxy chain
+- **Infrastructure** — Firecracker VM lifecycle, TAP networking, deployment topology
+- **Design decisions** — why Rust, why Firecracker, why this architecture
+- **Product roadmap** — vision, phases, and what's next
+
+> **If you're an AI agent**: start with `.context_bank/README.md`. It gives you enough context to understand the entire system and start contributing immediately — no human onboarding needed.
+
+---
+
 ## Demo
 
 ### 🤖 Create an Agent
