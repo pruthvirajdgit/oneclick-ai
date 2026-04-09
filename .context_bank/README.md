@@ -1,12 +1,13 @@
 # OneClick.ai — Context Bank
 
-Machine-readable project context for AI agents. Two sections:
+Machine-readable project context for AI agents. Main sections:
 
 ## Structure
 
 ```
 .context_bank/
 ├── README.md                          ← You are here
+├── ../new_machine_setup/              # Machine setup guides (Linux + macOS)
 ├── product/
 │   ├── vision.md                      # What we're building, for whom, and why
 │   ├── decisions.md                   # Product decisions with rationale
@@ -15,11 +16,11 @@ Machine-readable project context for AI agents. Two sections:
     ├── architecture.md                # System design, data flows, crate map
     ├── decisions.md                   # Technical ADRs (condensed)
     ├── guidelines.md                  # Coding standards, Rust idiomatics, PR rules
-    ├── infrastructure.md              # Docker, Postgres, Redis, networking, agent containers
+    ├── infrastructure.md              # Docker, Postgres, Redis, Firecracker, networking
     └── modules/
         ├── shared.md                  # Foundation crate
         ├── api.md                     # HTTP/WS routes, middleware, SSE bridge
-        ├── orchestrator.md            # Agent lifecycle, DockerRuntime
+        ├── orchestrator.md            # Agent lifecycle, DockerRuntime + FirecrackerRuntime
         ├── llm-proxy.md               # Multi-provider LLM routing with SSE streaming
         ├── scheduler.md               # Cron runner
         ├── monitor.md                 # Idle detection
@@ -29,14 +30,15 @@ Machine-readable project context for AI agents. Two sections:
         └── webhook-receiver.md        # Inbound integrations (stub)
 ```
 
-## Current State (as of Phase 2 completion)
+## Current State (as of Phase 3 — Firecracker integration)
 
-- **Backend**: Rust monolith (10 crates) on port 8080
+- **Backend**: Rust monolith (10 crates) on port 8080. In Firecracker mode it runs on host for KVM/TAP access; Docker Compose mode supports a containerized backend service.
 - **Frontend**: React 19 + Vite + Tailwind + shadcn/ui, served by nginx on port 80/3000
 - **Chat**: In-app WebSocket → SSE bridge pipeline with real-time token streaming
-- **Agent Runtime**: Custom OpenClaw image with chat-bridge.js (port 3001) and pair-device.js
-- **Infrastructure**: Docker Compose (frontend + backend + postgres + redis). No Traefik.
-- **Next**: Phase 3 — Firecracker microVMs for <200ms wake times
+- **Agent Runtime**: Dual — `DockerRuntime` (containers) or `FirecrackerRuntime` (microVMs), selected via `AGENT_RUNTIME` env var
+- **Firecracker**: 116ms snapshot wake, TAP networking, fctools SDK, VM-level isolation
+- **Infrastructure**: Docker Compose stack (includes backend service). Firecracker workflows run backend on host for KVM/TAP access.
+- **Next**: Production hardening — jailer security, on-disk snapshot recovery, billing
 
 ## Usage
 

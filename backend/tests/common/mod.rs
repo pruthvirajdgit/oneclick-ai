@@ -61,6 +61,18 @@ impl AgentRuntime for MockRuntime {
     async fn get_host_port(&self, _container_id: &str) -> AppResult<Option<u16>> {
         Ok(Some(39999))
     }
+
+    async fn get_agent_address(&self, _container_id: &str) -> AppResult<String> {
+        Ok("127.0.0.1".to_string())
+    }
+
+    fn agent_name(&self, user_id: &uuid::Uuid, agent_id: &uuid::Uuid) -> String {
+        format!("mock-agent-{}-{}", &user_id.to_string()[..8], &agent_id.to_string()[..8])
+    }
+
+    fn health_check_budget(&self) -> (u32, std::time::Duration) {
+        (1, std::time::Duration::from_millis(10))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +85,7 @@ use axum::Router;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use sqlx::PgPool;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 use oneclick_api::state::AppState;
 use oneclick_llm_proxy::LlmProxy;
@@ -114,6 +127,16 @@ impl TestApp {
             docker_network: "test-net".into(),
             internal_secret: "test-internal-secret".into(),
             cors_allowed_origins: "*".into(),
+            agent_runtime: "docker".into(),
+            fc_kernel_path: String::new(),
+            fc_rootfs_template: String::new(),
+            fc_snapshot_dir: String::new(),
+            fc_vm_dir: String::new(),
+            fc_vcpu_count: 2,
+            fc_mem_size_mib: 1536,
+            fc_tap_prefix: "tap".into(),
+            fc_tap_count: 16,
+            fc_subnet_prefix: "172.16".into(),
         });
 
         let runtime = MockRuntime::new();
@@ -135,10 +158,16 @@ impl TestApp {
             })
             .clone();
 
+        // Docker client — not used by any route handler but required by AppState.
+        // Use connect_with_http to avoid needing /var/run/docker.sock on the host.
+        let docker = bollard::Docker::connect_with_http_defaults()
+            .expect("Docker client creation should not fail");
+
         let state = AppState {
             config,
             db: db.clone(),
             redis: redis_pool,
+            docker,
             orchestrator,
             llm_proxy,
             notification_service,
@@ -205,6 +234,86 @@ impl TestApp {
             .uri(path)
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
+            .unwrap();
+        self.request(req).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal endpoint helpers (header-based auth)
+    // -----------------------------------------------------------------------
+
+    /// `POST` JSON to an internal endpoint with X-Agent-Id/X-User-Id/X-Internal-Secret headers.
+    pub async fn post_internal(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        agent_id: Uuid,
+        user_id: Uuid,
+        secret: &str,
+    ) -> (StatusCode, String) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .header("X-Agent-Id", agent_id.to_string())
+            .header("X-User-Id", user_id.to_string())
+            .header("X-Internal-Secret", secret)
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        self.request(req).await
+    }
+
+    /// `GET` an internal endpoint with X-Agent-Id/X-User-Id/X-Internal-Secret headers.
+    pub async fn get_internal(
+        &self,
+        path: &str,
+        agent_id: Uuid,
+        user_id: Uuid,
+        secret: &str,
+    ) -> (StatusCode, String) {
+        let req = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("X-Agent-Id", agent_id.to_string())
+            .header("X-User-Id", user_id.to_string())
+            .header("X-Internal-Secret", secret)
+            .body(Body::empty())
+            .unwrap();
+        self.request(req).await
+    }
+
+    /// `DELETE` an internal endpoint with X-Agent-Id/X-User-Id/X-Internal-Secret headers.
+    pub async fn delete_internal(
+        &self,
+        path: &str,
+        agent_id: Uuid,
+        user_id: Uuid,
+        secret: &str,
+    ) -> (StatusCode, String) {
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(path)
+            .header("X-Agent-Id", agent_id.to_string())
+            .header("X-User-Id", user_id.to_string())
+            .header("X-Internal-Secret", secret)
+            .body(Body::empty())
+            .unwrap();
+        self.request(req).await
+    }
+
+    /// `POST` JSON with a composite Bearer token (`secret|agent_id|user_id`).
+    pub async fn post_with_bearer(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        bearer: &str,
+    ) -> (StatusCode, String) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {bearer}"))
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         self.request(req).await
     }

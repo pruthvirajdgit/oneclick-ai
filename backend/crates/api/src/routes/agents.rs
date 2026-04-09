@@ -19,6 +19,8 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list_agents).post(create_agent))
         .route("/{id}", get(get_agent).delete(delete_agent))
         .route("/{id}/wake", post(wake_agent))
+        .route("/{id}/sleep", post(sleep_agent))
+        .route("/{id}/gateway-status", get(gateway_status))
 }
 
 /// `GET /api/agents` — List the authenticated user's agents.
@@ -105,7 +107,30 @@ async fn delete_agent(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/agents/:id/wake` — Wake an agent and return its OpenClaw chat UI URL.
+/// `POST /api/agents/:id/sleep` — Put an agent to sleep (snapshot VM, stop container).
+async fn sleep_agent(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    tracing::info!(user_id = %auth.0.sub, agent_id = %id, "Sleep agent requested");
+
+    let agent = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Agent {id} not found")))?;
+
+    if agent.user_id != auth.0.sub {
+        return Err(AppError::NotFound(format!("Agent {id} not found")));
+    }
+
+    let agent = state.orchestrator.sleep_agent(agent.id).await?;
+
+    tracing::info!(agent_id = %id, "Agent put to sleep");
+
+    Ok(Json(AgentResponse::from(agent)))
+}
 ///
 /// Blocks until the agent is healthy (up to ~450s). The frontend should show
 /// a loading state while this request is in flight, then open the returned
@@ -130,25 +155,28 @@ async fn wake_agent(
     // Blocks until healthy or returns error after retries exhausted.
     let agent = state.orchestrator.ensure_ready(agent.id).await?;
 
-    // Get the dynamically assigned host port for the OpenClaw UI
-    let host_port = state
-        .orchestrator
-        .get_host_port(agent.id)
-        .await?
-        .ok_or_else(|| AppError::Internal("No host port mapped for agent".into()))?;
+    // Get the dynamically assigned host port for the OpenClaw UI.
+    // For Firecracker VMs, there's no host port mapping — use the agent's
+    // TAP address directly via the reverse proxy path.
+    let host_port = state.orchestrator.get_host_port(agent.id).await?;
 
     // Build the chat URL. In GitHub Codespaces, ports are forwarded via
     // https://{codespace_name}-{port}.{domain}. Outside Codespaces, use localhost.
     // Append the gateway token so the OpenClaw UI auto-authenticates.
     let gw_token = "oneclick-internal";
-    let chat_url = match (
-        std::env::var("CODESPACE_NAME").ok().filter(|s| !s.is_empty()),
-        std::env::var("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN").ok().filter(|s| !s.is_empty()),
-    ) {
-        (Some(codespace), Some(domain)) => {
-            format!("https://{codespace}-{host_port}.{domain}/?token={gw_token}")
+    let chat_url = if let Some(port) = host_port {
+        match (
+            std::env::var("CODESPACE_NAME").ok().filter(|s| !s.is_empty()),
+            std::env::var("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN").ok().filter(|s| !s.is_empty()),
+        ) {
+            (Some(codespace), Some(domain)) => {
+                format!("https://{codespace}-{port}.{domain}/?token={gw_token}")
+            }
+            _ => format!("http://localhost:{port}/?token={gw_token}"),
         }
-        _ => format!("http://localhost:{host_port}/?token={gw_token}"),
+    } else {
+        // No host port (Firecracker) — use the reverse proxy route
+        format!("/agent-ui/{id}/?token={gw_token}")
     };
     tracing::info!(agent_id = %id, %chat_url, "Agent woken — chat URL ready");
 
@@ -156,4 +184,52 @@ async fn wake_agent(
         status: agent.status,
         chat_url,
     }))
+}
+
+/// `GET /api/agents/:id/gateway-status` — Check if the OpenClaw gateway is ready.
+///
+/// Returns `{ "ready": true }` if the in-VM bridge reports gateway connected,
+/// otherwise `{ "ready": false }`.
+async fn gateway_status(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let agent = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Agent {id} not found")))?;
+
+    if agent.user_id != auth.0.sub {
+        return Err(AppError::NotFound(format!("Agent {id} not found")));
+    }
+
+    if agent.status != oneclick_shared::models::agent::AgentStatus::Running {
+        return Ok(Json(serde_json::json!({ "ready": false, "reason": "agent not running" })));
+    }
+
+    let addr = match state.orchestrator.get_agent_address(id).await {
+        Ok(a) => a,
+        Err(_) => {
+            return Ok(Json(serde_json::json!({ "ready": false, "reason": "address unavailable" })));
+        }
+    };
+
+    // Hit the bridge health endpoint
+    let health_url = format!("http://{}:3001/health", addr);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap();
+
+    match client.get(&health_url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            // Bridge returns {"status":"ok","connected":true} when gateway is ready
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            let connected = body.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
+            Ok(Json(serde_json::json!({ "ready": connected })))
+        }
+        _ => Ok(Json(serde_json::json!({ "ready": false, "reason": "bridge not reachable" }))),
+    }
 }

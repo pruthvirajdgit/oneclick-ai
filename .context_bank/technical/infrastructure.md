@@ -1,23 +1,37 @@
 # Infrastructure
 
+## Deployment Architecture
+
+Backend runs on the **host** (not in Docker) for both Docker and Firecracker runtimes. Frontend, postgres, and redis run in Docker.
+
+**Rationale:** Backend needs Docker socket access (Docker runtime) or KVM/TAP access (Firecracker). Running on host provides direct access to both. Mimics production where services run on separate servers.
+
+### What runs where
+| Component | Where | How |
+|-----------|-------|-----|
+| Backend | Host | `cargo run --release` or systemd |
+| Frontend | Docker | nginx container, port 80/3000 |
+| PostgreSQL | Docker | port 5432, `pgdata` volume |
+| Redis | Docker | port 6379, `redisdata` volume |
+| Agent containers | Docker | `oneclick-net` bridge (Docker runtime) |
+| Agent VMs | Host KVM | Firecracker + TAP networking (Firecracker runtime) |
+
 ## Docker Compose Stack
 
 ### Services (docker-compose.yml)
 | Service | Image | Port | Purpose |
 |---------|-------|------|---------|
-| frontend | oneclick-frontend (multi-stage: node build → nginx) | 80, 3000 | React app (dashboard, chat, auth) + reverse proxy to backend |
-| backend | oneclick-backend (multi-stage Rust build) | 8080 | Rust API server |
+| frontend | oneclick-frontend (multi-stage: node build → nginx) | 80, 3000 | React app + reverse proxy to backend |
 | postgres | postgres:16-alpine | 5432 | Primary database |
 | redis | redis:7-alpine | 6379 | Rate limits, session cache |
 
+Note: Backend is **not** in docker-compose. It runs directly on the host.
+
 ### Networking
-- All services on `oneclick-net` bridge network.
-- Frontend nginx proxies `/api/*` and `/swagger-ui/*` to backend on port 8080.
-- Backend mounts `/var/run/docker.sock` (`:ro` in prod) to create/manage agent containers as siblings.
-- Agent containers join `oneclick-net` dynamically (created by orchestrator).
-- Agents reach backend at `http://backend:8080`.
-- Backend reaches agents at `http://agent-{user_id_short}:3001` (chat-bridge) and port 3000 (gateway health).
-- Agent containers expose port 3000 (gateway) to a random host port for health checks.
+- Frontend nginx proxies `/api/*` to backend on `host.docker.internal:8080` (or `localhost:8080`).
+- Backend reaches Docker agent containers by container bridge IP (from `docker inspect`), not Docker DNS names.
+- Backend reaches Firecracker VMs by TAP guest IP (e.g., `172.16.0.2`).
+- Agent containers join `oneclick-net` dynamically (Docker runtime only).
 
 ### Volumes
 - `pgdata`: PostgreSQL data (persistent)
@@ -27,11 +41,57 @@
 ### Health Checks
 - Postgres: `pg_isready` every 5s
 - Redis: `redis-cli ping` every 5s
-- Backend: waits for healthy Postgres + Redis before starting
 
 ### Overrides
-- `docker-compose.override.yml`: Dev — backend exposed on 8080, debug ports
-- `docker-compose.prod.yml`: Prod overlay (not standalone) — TLS via Let's Encrypt, Docker socket `:ro`, `DOMAIN` and `ACME_EMAIL` required, no exposed DB/Redis ports
+- `docker-compose.override.yml`: Dev — exposed ports, debug config
+- `docker-compose.prod.yml`: Prod overlay — TLS, Docker socket `:ro`, `DOMAIN` + `ACME_EMAIL` required
+
+## Firecracker Runtime
+
+### Components
+- **Firecracker v1.12.0**: MicroVM hypervisor, runs on host with KVM
+- **fctools 0.7.0-alpha.1**: Rust SDK for Firecracker API
+- **TAP Manager**: Pool of tap0-tap15, managed by backend
+- **Kernel**: vmlinux-6.1 (must be 6.1, not 5.10 — MMIO probe errors on 5.10)
+- **Rootfs template**: 4GB ext4 with OpenClaw + Node.js + chat-bridge.js
+
+### TAP Networking
+Each VM gets a dedicated TAP device with a /30 subnet:
+```
+TAP Index | TAP Device | Host IP       | Guest IP      | MAC
+0         | tap0       | 172.16.0.1    | 172.16.0.2    | AA:FC:00:00:00:00
+1         | tap1       | 172.16.0.5    | 172.16.0.6    | AA:FC:00:00:00:01
+...       | ...        | 172.16.0.{4i+1} | 172.16.0.{4i+2} | AA:FC:00:00:00:{hex(i)}
+```
+IP forwarding enabled. iptables MASQUERADE for outbound NAT.
+
+### VM Lifecycle
+```
+create_agent:
+  rootfs template ──cp──→ /var/lib/oneclick/vms/fc-{uuid}.ext4
+  mount rootfs → write /etc/fc-network + /etc/openclaw-env → unmount
+  allocate TAP device
+
+start_agent (cold boot):
+  if TAP allocation lost (backend restart) → auto-re-allocate
+  fctools → configure VM (kernel, rootfs, network) → boot → health check
+
+start_agent (snapshot restore):
+  if TAP allocation lost (backend restart) → auto-re-allocate
+  fctools → load snapshot (mem + vmstate) → resume → health check (~400ms)
+
+stop_agent:
+  pause VM → create snapshot → save to memory + disk → shutdown
+
+destroy_agent:
+  shutdown VM → release TAP → delete rootfs + snapshots
+```
+
+### Snapshot Storage
+
+- **In-memory**: `VmSnapshot` held in `HashMap` (inside `Mutex`) for fast restore (lost on backend restart)
+- **On-disk**: `/var/lib/oneclick/snapshots/{vm_id}/` with `vm.snap` + `vm.mem`
+- Each snapshot is ~1.5GB (VM memory size). 16 VMs = ~24GB disk.
 
 ## PostgreSQL Schema
 
@@ -59,19 +119,27 @@ session:{jwt_hash}                 →  JSON (TTL: 24h)
 agent_status:{agent_id}            →  string (TTL: 60s)
 ```
 
-## Agent Containers
+## Agent Containers (Docker Runtime)
 - Image: `oneclick-agent:latest` (custom OpenClaw build from `agent-runtime/Dockerfile`)
 - Memory: 4GB default (configurable via `AGENT_MEMORY_LIMIT`). OpenClaw startup peak exceeds 2GB; steady state ~500MB.
 - CPU: 0.5 cores (configurable via `AGENT_CPU_LIMIT`)
 - Network: `oneclick-net`
-- Labels: `oneclick.agent_id`, `oneclick.user_id`
-- TTY required: `tty: true` (gateway needs a TTY to run properly)
-- Named volume: `oneclick-agent-{container_name}:/home/node/.openclaw` (state persistence)
-- Health check: Direct HTTP probe to `http://localhost:{host_port}/health` with 150 retries × 3s interval (~450s budget). Start-period of 90s.
-- Restart policy: none (backend manages lifecycle)
-- Chat bridge: `chat-bridge.js` on port 3001 — translates HTTP POST → WebSocket for OpenClaw gateway. Uses Ed25519 keypair for device authentication. Returns SSE stream.
-- Device pairing: `pair-device.js` runs at container start, auto-approves the first device pairing request (120 attempts, 3s interval).
-- Env vars:
+- Agent address: container bridge IP from `docker inspect` (not DNS — backend runs on host)
+- Health check: Direct HTTP probe to container_ip:3001/health. Budget: 100 retries × 3s = 5 min.
+- Chat bridge: `chat-bridge.js` on port 3001 — translates HTTP POST → WebSocket for OpenClaw gateway
+- Device pairing: `pair-device.js` runs at container start, auto-approves first pairing request
+
+## Agent MicroVMs (Firecracker Runtime)
+- Rootfs: copy of template at `/var/lib/oneclick/vms/fc-{uuid}.ext4` (~4GB)
+- vCPU: 2 (configurable via `FC_VCPU_COUNT`)
+- Memory: 1536 MiB (configurable via `FC_MEM_SIZE_MIB`)
+- Network: TAP device, guest gets IP from /etc/fc-network
+- Agent address: TAP guest IP (e.g., 172.16.0.2)
+- Health check: TCP probe to guest_ip:3001. Budget: 60 retries × 1s = 60s.
+- Init: reads `/etc/fc-network` for networking, `/etc/openclaw-env` for app config
+- Same chat-bridge.js + pair-device.js as Docker, baked into rootfs template
+
+## Agent Common Config (both runtimes)
   - `OPENROUTER_API_KEY` = `{internal_secret}|{agent_id}|{user_id}` (encodes auth identity for internal endpoints; OpenClaw sends this as `Authorization: Bearer` header)
   - `OPENROUTER_BASE_URL` = `http://backend:8080/internal/llm/v1`
   - `OPENCLAW_GATEWAY_TOKEN` = `oneclick-internal`
@@ -99,27 +167,43 @@ agent_status:{agent_id}            →  string (TTL: 60s)
 
 ## Environment Variables
 ```
-# Required (startup fails if missing — use ${VAR:?} in compose)
-DATABASE_URL          postgres://oneclick:password@postgres:5432/oneclick
+# Required
+DATABASE_URL          postgres://oneclick:password@localhost:5432/oneclick
 JWT_SECRET            random-64-char-string
 INTERNAL_SECRET       random-string (agent→backend auth)
 GROQ_API_KEY          gsk_... (at least one LLM key required)
-OPENROUTER_API_KEY    sk-or-v1-... (at least one LLM key required)
 
-# Required in prod compose only
-DOMAIN                yourdomain.com
-ACME_EMAIL            admin@yourdomain.com
+# Optional LLM
+OPENROUTER_API_KEY    sk-or-v1-... (fallback provider)
+
+# Runtime selection
+AGENT_RUNTIME         docker | firecracker (default: docker)
+
+# Docker runtime config
+AGENT_IMAGE           oneclick-agent:latest
+AGENT_MEMORY_LIMIT    512m
+AGENT_CPU_LIMIT       0.5
+DOCKER_NETWORK        oneclick-net
+
+# Firecracker runtime config (only when AGENT_RUNTIME=firecracker)
+FC_KERNEL_PATH        /opt/firecracker/vmlinux-6.1
+FC_ROOTFS_TEMPLATE    /opt/firecracker/rootfs-openclaw.ext4
+FC_SNAPSHOT_DIR       /var/lib/oneclick/snapshots
+FC_VM_DIR             /var/lib/oneclick/vms
+FC_VCPU_COUNT         2
+FC_MEM_SIZE_MIB       1536
+FC_TAP_COUNT          16
 
 # Optional (have defaults)
-REDIS_URL             redis://redis:6379
-CORS_ALLOWED_ORIGINS  http://localhost:3000 (comma-separated)
-AGENT_IMAGE           oneclick-agent:latest
-AGENT_MEMORY_LIMIT    4g
-AGENT_CPU_LIMIT       0.5
+REDIS_URL             redis://localhost:6379
+CORS_ALLOWED_ORIGINS  http://localhost:3000
 MAX_AGENTS            100
 FREE_TIER_DAILY_LIMIT 50
 IDLE_TIMEOUT_MINUTES  15
-DOCKER_NETWORK        oneclick-net
+
+# Prod only
+DOMAIN                yourdomain.com
+ACME_EMAIL            admin@yourdomain.com
 ```
 
 ## Deployment
@@ -127,14 +211,25 @@ DOCKER_NETWORK        oneclick-net
 ### Local Dev
 ```bash
 cp .env.example .env  # fill in API keys
-docker build -t oneclick-agent:latest agent-runtime/
-docker compose up -d --build
-# Frontend at http://localhost:3000
+
+# Start infrastructure
+docker compose up -d postgres redis
+
+# Build agent image (needed for Docker runtime or rootfs template)
+cd agent-runtime && docker build -t oneclick-agent:latest . && cd ..
+
+# For Firecracker: build rootfs template
+cd local_poc/firecracker && sudo bash scripts/build-rootfs-template.sh && cd ../..
+
+# Run backend on host
+cd backend && cargo run --release
+
+# Frontend at http://localhost:3000 (if running frontend container)
 # Swagger UI at http://localhost:8080/swagger-ui/
 ```
 
-### Azure Production
-- Azure VM (D4s v5: 4 vCPU, 16GB RAM) — supports ~30 concurrent agents
-- Docker Compose with `docker-compose.prod.yml` overlay
-- Managed PostgreSQL or containerized with persistent disk
-- Nginx in frontend container handles SSL termination (or add a reverse proxy like Caddy/nginx in front)
+### Production
+- Linux server with KVM support (for Firecracker)
+- Backend as systemd service on host
+- Docker Compose for frontend + postgres + redis
+- Firecracker jailer for VM security isolation (TODO)

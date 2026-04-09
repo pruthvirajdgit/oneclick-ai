@@ -6,9 +6,11 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Bot, Loader2, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
+import { toast } from "sonner";
 
 // ── Types ──────────────────────────────────────────────────────
 interface ChatMessage {
@@ -70,11 +72,13 @@ const MAX_RECONNECT_DELAY = 16_000;
 // ── Component ──────────────────────────────────────────────────
 export default function ChatPage() {
   const { id: agentId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
-  const [isAgentReady, setIsAgentReady] = useState(false);
+  const [agentReady, setAgentReady] = useState<boolean | null>(null); // null = checking
+  const [gatewayReady, setGatewayReady] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [input, setInput] = useState("");
 
@@ -87,6 +91,58 @@ export default function ChatPage() {
   const userScrolledUp = useRef(false);
   // Ref to track the id of the current streaming message so we can append to it
   const streamingMsgId = useRef<string | null>(null);
+
+  // ── Check agent status before connecting ───────────────────
+  useEffect(() => {
+    if (!agentId) return;
+    let cancelled = false;
+
+    async function checkAgent() {
+      try {
+        const agent = await apiFetch<{ status: string }>(`/agents/${agentId}`);
+        if (cancelled) return;
+        if (agent.status === "running") {
+          setAgentReady(true);
+        } else {
+          toast.error("Agent is not running. Wake it from the dashboard first.");
+          navigate("/dashboard");
+        }
+      } catch {
+        if (!cancelled) {
+          toast.error("Agent not found");
+          navigate("/dashboard");
+        }
+      }
+    }
+
+    checkAgent();
+    return () => { cancelled = true; };
+  }, [agentId, navigate]);
+
+  // ── Poll gateway readiness ─────────────────────────────────
+  useEffect(() => {
+    if (!agentId || !agentReady) return;
+    let cancelled = false;
+
+    async function pollGateway() {
+      while (!cancelled) {
+        try {
+          const res = await apiFetch<{ ready: boolean }>(`/agents/${agentId}/gateway-status`);
+          if (cancelled) return;
+          if (res.ready) {
+            setGatewayReady(true);
+            return;
+          }
+        } catch {
+          // ignore errors, keep polling
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+
+    pollGateway();
+    return () => { cancelled = true; };
+  }, [agentId, agentReady]);
 
   // ── Auto-scroll ──────────────────────────────────────────────
   const scrollToBottom = useCallback(() => {
@@ -107,13 +163,6 @@ export default function ChatPage() {
   }
 
   // ── WebSocket ────────────────────────────────────────────────
-  const addSystemMessage = useCallback((content: string) => {
-    setMessages((prev) => [
-      ...prev,
-      { id: nextId(), role: "system", content, timestamp: new Date() },
-    ]);
-  }, []);
-
   const connect = useCallback(() => {
     if (!agentId) return;
     const token = localStorage.getItem("token");
@@ -143,16 +192,13 @@ export default function ChatPage() {
       switch (data.type) {
         case "status": {
           const msg = data.message ?? "";
-          addSystemMessage(msg);
+          // Only show "Agent ready" and "Thinking" — skip connection/waking noise
           if (/ready/i.test(msg)) {
-            setIsAgentReady(true);
             setIsThinking(false);
           } else if (/thinking/i.test(msg)) {
             setIsThinking(true);
-          } else if (/waking/i.test(msg)) {
-            setIsAgentReady(false);
-            setIsThinking(false);
           }
+          // Don't display waking/connecting status messages in the chat
           break;
         }
 
@@ -246,9 +292,10 @@ export default function ChatPage() {
     ws.onerror = () => {
       ws.close();
     };
-  }, [agentId, addSystemMessage]);
+  }, [agentId]);
 
   useEffect(() => {
+    if (!gatewayReady) return; // Don't connect until gateway is confirmed ready
     connect();
     return () => {
       clearTimeout(reconnectTimer.current);
@@ -256,7 +303,7 @@ export default function ChatPage() {
       wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId]);
+  }, [agentId, gatewayReady]);
 
   // Auto-focus input
   useEffect(() => {
@@ -290,7 +337,6 @@ export default function ChatPage() {
   const isSendDisabled =
     !input.trim() ||
     connectionStatus !== "connected" ||
-    (!isAgentReady && messages.length === 0) ||
     isThinking;
 
   // ── No agent selected ────────────────────────────────────────
@@ -305,6 +351,23 @@ export default function ChatPage() {
         >
           ← Back to Dashboard
         </Link>
+      </div>
+    );
+  }
+
+  // ── Checking agent status ───────────────────────────────────
+  if (agentReady === null || (agentReady && !gatewayReady)) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
+        <Loader2 className="mb-3 h-8 w-8 animate-spin text-indigo-400" />
+        <p className="text-sm font-medium">
+          {agentReady === null ? "Checking agent status…" : "Waiting for agent gateway…"}
+        </p>
+        {agentReady && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            This may take up to 60 seconds on first boot
+          </p>
+        )}
       </div>
     );
   }
@@ -376,19 +439,8 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Agent waking state */}
+          {/* Ready — no messages yet */}
           {connectionStatus === "connected" &&
-            !isAgentReady &&
-            messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                <Loader2 className="mb-3 h-8 w-8 animate-spin text-indigo-400" />
-                <p className="text-sm">Agent waking up…</p>
-              </div>
-            )}
-
-          {/* Agent ready, no messages yet */}
-          {connectionStatus === "connected" &&
-            isAgentReady &&
             messages.filter((m) => m.role !== "system").length === 0 && (
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                 <Bot className="mb-3 h-10 w-10 text-indigo-400" />

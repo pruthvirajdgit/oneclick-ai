@@ -13,7 +13,7 @@ use oneclick_llm_proxy::LlmProxy;
 use oneclick_monitor::IdleMonitor;
 use oneclick_notifications::NotificationService;
 use bollard::Docker;
-use oneclick_orchestrator::{DockerRuntime, Orchestrator};
+use oneclick_orchestrator::{DockerRuntime, FirecrackerRuntime, Orchestrator, TapManager};
 use oneclick_scheduler::Scheduler;
 
 #[tokio::main]
@@ -61,9 +61,19 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Docker client connected");
 
     // ── Orchestrator ────────────────────────────────────────────────────
-    let runtime = DockerRuntime::new()?;
-    let orchestrator = Arc::new(Orchestrator::new(Arc::new(runtime), db_pool.clone()));
-    tracing::info!("Orchestrator initialized");
+    let runtime: Arc<dyn oneclick_orchestrator::AgentRuntime> = match config.agent_runtime.as_str() {
+        "firecracker" => {
+            tracing::info!("Using Firecracker runtime");
+            let tap_manager = Arc::new(TapManager::new(&config));
+            Arc::new(FirecrackerRuntime::new(config.clone(), tap_manager))
+        }
+        _ => {
+            tracing::info!("Using Docker runtime");
+            Arc::new(DockerRuntime::new()?)
+        }
+    };
+    let orchestrator = Arc::new(Orchestrator::new(runtime, db_pool.clone()));
+    tracing::info!("Orchestrator initialized (runtime: {})", config.agent_runtime);
 
     // ── LLM Proxy ───────────────────────────────────────────────────────
     let llm_proxy = Arc::new(LlmProxy::new(&config, db_pool.clone()));

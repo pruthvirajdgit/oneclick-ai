@@ -41,9 +41,19 @@ pub async fn proxy_agent_ui(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Agent {agent_id} not found")))?;
 
-    let container_name = agent
+    let _container_name = agent
         .container_name
         .ok_or_else(|| AppError::Internal("Agent has no container name".into()))?;
+
+    // Get reachable address for this agent
+    let agent_address = state
+        .orchestrator
+        .get_agent_address(agent_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(agent_id = %agent_id, error = %e, "Failed to resolve agent address");
+            AppError::AgentUnavailable(format!("Failed to resolve agent address: {e}"))
+        })?;
 
     // Strip the /agent-ui/{id} prefix to get the downstream path
     let prefix = format!("/agent-ui/{agent_id}");
@@ -51,7 +61,7 @@ pub async fn proxy_agent_ui(
     let downstream_path = if downstream_path.is_empty() { "/" } else { downstream_path };
 
     let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
-    let target_url = format!("http://{container_name}:3000{downstream_path}{query}");
+    let target_url = format!("http://{agent_address}:3000{downstream_path}{query}");
 
     let client = Client::new();
     let proxy_resp = client

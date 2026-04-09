@@ -9,7 +9,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::time::{sleep, Duration};
+use tokio::time::sleep;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -17,15 +17,7 @@ use oneclick_shared::config::Config;
 use oneclick_shared::errors::{AppError, AppResult};
 use oneclick_shared::models::agent::{Agent, AgentStatus};
 
-use crate::runtime::{AgentRuntime, DockerRuntime};
-
-/// Maximum number of health-check attempts after waking an agent.
-/// OpenClaw gateway can take 3-7 minutes in resource-constrained environments
-/// (WSL2, Codespaces, small VMs). 150 × 3s = 450s (7.5 min) budget.
-const HEALTH_CHECK_RETRIES: u32 = 150;
-
-/// Delay between health-check attempts.
-const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(3);
+use crate::runtime::AgentRuntime;
 
 /// Central service for managing agent lifecycles.
 ///
@@ -77,7 +69,7 @@ impl Orchestrator {
         config: &Config,
     ) -> AppResult<Agent> {
         let agent_id = Uuid::new_v4();
-        let container_name = DockerRuntime::container_name(&user_id, &agent_id);
+        let container_name = self.runtime.agent_name(&user_id, &agent_id);
 
         // Atomically check capacity and insert in a single statement.
         // If the count is already at the limit, no row is inserted.
@@ -157,6 +149,10 @@ impl Orchestrator {
 
         if !healthy {
             error!(agent_id = %agent_id, "Agent failed health check after wake");
+            // Stop the VM so it doesn't leak resources
+            if let Err(e) = self.runtime.stop_agent(container_id).await {
+                warn!(agent_id = %agent_id, error = %e, "Failed to stop unhealthy agent");
+            }
             self.update_status(agent_id, AgentStatus::Error).await?;
             return Err(AppError::AgentUnavailable(
                 "Agent did not become healthy after start".into(),
@@ -288,6 +284,16 @@ impl Orchestrator {
         self.runtime.get_host_port(container_id).await
     }
 
+    /// Get the reachable IP/hostname for the given agent.
+    pub async fn get_agent_address(&self, agent_id: Uuid) -> AppResult<String> {
+        let agent = self.get_agent(agent_id).await?;
+        let container_id = agent
+            .container_id
+            .as_deref()
+            .ok_or_else(|| AppError::Internal("Agent has no container ID".into()))?;
+        self.runtime.get_agent_address(container_id).await
+    }
+
     /// Remove lock entries for agents that no longer exist in the DB.
     ///
     /// Call periodically (e.g., from the idle-monitor sweep) to bound
@@ -347,7 +353,8 @@ impl Orchestrator {
 
     /// Poll the runtime health check with retries.
     async fn poll_health(&self, container_id: &str) -> bool {
-        for attempt in 1..=HEALTH_CHECK_RETRIES {
+        let (max_retries, interval) = self.runtime.health_check_budget();
+        for attempt in 1..=max_retries {
             match self.runtime.health_check(container_id).await {
                 Ok(true) => {
                     info!(container_id, attempt, "Health check passed");
@@ -360,8 +367,8 @@ impl Orchestrator {
                     warn!(container_id, attempt, error = %e, "Health check error");
                 }
             }
-            if attempt < HEALTH_CHECK_RETRIES {
-                sleep(HEALTH_CHECK_INTERVAL).await;
+            if attempt < max_retries {
+                sleep(interval).await;
             }
         }
         false
