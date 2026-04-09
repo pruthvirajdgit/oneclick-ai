@@ -1,41 +1,8 @@
 # Production overrides — use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up
-# Requires: DOMAIN, ACME_EMAIL, INTERNAL_SECRET, JWT_SECRET set in .env
+# Backend runs on the host (not in Docker) — nginx in frontend container proxies API to host.
 services:
-  traefik:
-    command:
-      - "--api.insecure=false"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in .env}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/certs/acme.json"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - certs:/certs
-
-  backend:
-    volumes:
-      # Production: use a Docker socket proxy (e.g. Tecnativa/docker-socket-proxy)
-      # instead of direct socket access. Read-only mount as minimum mitigation.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`${DOMAIN:?Set DOMAIN in .env}`)"
-      - "traefik.http.routers.backend.entrypoints=websecure"
-      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
-      - "traefik.http.services.backend.loadbalancer.server.port=8080"
-
   postgres:
     ports: []  # Don't expose in prod
 
   redis:
     ports: []  # Don't expose in prod
-
-volumes:
-  certs:

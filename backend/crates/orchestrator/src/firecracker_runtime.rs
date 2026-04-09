@@ -19,7 +19,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use uuid::Uuid;
 
 use fctools::{
@@ -202,10 +202,26 @@ impl FirecrackerRuntime {
         guest_mac: &str,
     ) -> AppResult<FcVm> {
         let socket_path = self.socket_path(agent_id);
+
+        // Kill any stale firecracker process holding this socket before we start
+        if std::path::Path::new(&socket_path).exists() {
+            warn!(agent_id, "Stale socket found, killing any process using it");
+            let _ = Command::new("fuser")
+                .args(["-k", &socket_path])
+                .output()
+                .await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
         let _ = tokio::fs::remove_file(&socket_path).await;
 
         let mut resource_system = Self::resource_system();
-        let data = self.build_config(agent_id, tap_device, guest_mac, &mut resource_system)?;
+        let data = match self.build_config(agent_id, tap_device, guest_mac, &mut resource_system) {
+            Ok(d) => d,
+            Err(e) => {
+                error!(agent_id, error = %e, "build_config failed");
+                return Err(e);
+            }
+        };
 
         let configuration = VmConfiguration::New {
             init_method: InitMethod::ViaApiCalls,
@@ -236,9 +252,21 @@ impl FirecrackerRuntime {
             }
         });
 
-        vm.start(Duration::from_secs(30))
-            .await
-            .map_err(|e| AppError::Internal(format!("Vm::start failed: {:?}", e)))?;
+        if let Err(e) = vm.start(Duration::from_secs(30)).await {
+            chmod_handle.abort();
+            error!(agent_id, error = ?e, "Vm::start failed, shutting down orphaned process");
+            // Kill the orphaned firecracker process that Vm::prepare spawned
+            if let Err(shutdown_err) = self.shutdown_vm(&mut vm).await {
+                warn!(agent_id, error = %shutdown_err, "Failed to shut down orphaned VM, killing socket process");
+                // Last resort: find and kill the process by socket path
+                let _ = Command::new("fuser")
+                    .args(["-k", &socket_path])
+                    .output()
+                    .await;
+            }
+            let _ = tokio::fs::remove_file(&socket_path).await;
+            return Err(AppError::Internal(format!("Vm::start failed: {:?}", e)));
+        }
 
         chmod_handle.abort();
         info!(agent_id, "Firecracker VM cold-booted");
@@ -649,7 +677,13 @@ impl AgentRuntime for FirecrackerRuntime {
         }
 
         // Cold boot (no lock held)
-        let vm = self.cold_boot(agent_id, &alloc.device, &alloc.guest_mac).await?;
+        let vm = match self.cold_boot(agent_id, &alloc.device, &alloc.guest_mac).await {
+            Ok(vm) => vm,
+            Err(e) => {
+                error!(agent_id, error = %e, "Cold boot failed");
+                return Err(e);
+            }
+        };
 
         let mut vms = self.vms.lock().await;
         vms.insert(agent_id.to_string(), VmState {

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_appender::rolling;
 
 use oneclick_shared::config::Config;
 use oneclick_shared::db;
@@ -18,23 +19,34 @@ use oneclick_scheduler::Scheduler;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize structured logging (JSON format for machine consumption)
+    // Initialize structured logging (JSON to both stdout and daily-rotating file)
+    let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
+    std::fs::create_dir_all(&log_dir).expect("Failed to create log directory");
+    let file_appender = rolling::daily(&log_dir, "backend.log");
+    let (non_blocking_file, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            "oneclick_backend=debug,\
+             oneclick_api=info,\
+             oneclick_orchestrator=info,\
+             oneclick_shared=warn,\
+             oneclick_monitor=info,\
+             oneclick_scheduler=info,\
+             oneclick_llm_proxy=info,\
+             oneclick_notifications=info,\
+             tower_http=debug"
+                .into()
+        });
+
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    "oneclick_backend=debug,\
-                     oneclick_api=info,\
-                     oneclick_orchestrator=info,\
-                     oneclick_monitor=info,\
-                     oneclick_scheduler=info,\
-                     oneclick_llm_proxy=info,\
-                     oneclick_notifications=info,\
-                     tower_http=debug"
-                        .into()
-                }),
-        )
+        .with(env_filter)
         .with(tracing_subscriber::fmt::layer().json())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(non_blocking_file),
+        )
         .init();
 
     tracing::info!("Starting OneClick.ai backend");

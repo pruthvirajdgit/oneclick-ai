@@ -1,9 +1,0 @@
-# Auto-loaded in dev. Override for local development.
-services:
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    # In dev, expose backend directly too
-    ports:
-      - "8080:8080"

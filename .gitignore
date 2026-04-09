@@ -34,3 +34,4 @@ redisdata/
 
 # E2E test scripts (WIP)
 e2e_tests/
+logs/
