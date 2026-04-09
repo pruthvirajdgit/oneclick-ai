@@ -28,7 +28,7 @@ fi
 echo "✅ Docker is running"
 
 # Check for .env file
-cd "$(dirname "$0")/../oneclick-runtime"
+cd "$(dirname "$0")/../agent-runtime"
 
 if [ ! -f .env ]; then
     echo ""

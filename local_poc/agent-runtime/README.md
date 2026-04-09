@@ -34,7 +34,7 @@ docker compose down
 ## Project Structure
 
 ```
-oneclick-runtime/
+agent-runtime/
 ├── docker-compose.yml          # Main compose file — runs one agent locally
 ├── docker-compose.multi.yml    # Multi-agent compose (for testing scaling)
 ├── Dockerfile                  # Custom OpenClaw image with our defaults

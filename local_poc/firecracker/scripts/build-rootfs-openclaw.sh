@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   - Docker image oneclick-agent:latest must be built first
-#   - Run from repo root: docker compose build oneclick-runtime (or equivalent)
+#   - Run from repo root: docker compose build agent-runtime (or equivalent)
 #
 # Usage:
 #   ./scripts/build-rootfs-openclaw.sh [docker-image-name] [groq-api-key]

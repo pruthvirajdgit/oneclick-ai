@@ -8,7 +8,7 @@
 
 set -e
 
-RUNTIME_DIR="$(cd "$(dirname "$0")/../oneclick-runtime" && pwd)"
+RUNTIME_DIR="$(cd "$(dirname "$0")/../agent-runtime" && pwd)"
 cd "$RUNTIME_DIR"
 
 # Read gateway token from .env
