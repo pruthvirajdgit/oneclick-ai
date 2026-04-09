@@ -52,41 +52,63 @@ Browser WS → Backend (chat.rs) → HTTP POST → chat-bridge.js:3001
 **Goal:** <200ms wake, VM isolation, local disk snapshots.
 **Delivered:**
 - `FirecrackerRuntime` implementing `AgentRuntime` trait (fctools 0.7.0-alpha.1)
-- TAP network manager — pool of 16 TAP devices with /30 subnets
+- TAP network manager — pool of TAP devices with /30 subnets
 - VM snapshot/restore lifecycle (sleep → snapshot, wake → restore)
 - Rootfs template system — parameterized OpenClaw rootfs with per-VM config injection
 - `get_agent_address()` trait method — unified agent addressing (container IP or TAP IP)
 - Runtime selector: `AGENT_RUNTIME=docker|firecracker` env var
 - Sleep endpoint: `POST /api/agents/:id/sleep`
-- Gateway status endpoint: `GET /api/agents/:id/gateway-status` (polls bridge health for OpenClaw readiness)
-- TAP auto-re-allocation on backend restart
-- Backend runs on host for both runtimes (deployment refactor)
+- Gateway status endpoint: `GET /api/agents/:id/gateway-status`
+- Orphaned Firecracker process cleanup (pre-boot stale socket check + post-failure shutdown)
+- Backend runs on host (KVM access), frontend/postgres/redis in Docker
+- nginx proxies to `host.docker.internal:8080`
+- Native file logging via tracing-appender (daily rotation to `logs/`)
+- LLM proxy context limit raised to 200k chars (from 8k)
+- OpenClaw contextTokens set to 65536
 - Full E2E verified: signup → create → wake → chat → sleep → wake from snapshot → chat → delete
 
 **Frontend UX (Phase 3):**
-- Dashboard: async agent creation (fire-and-forget, "Creating…" card), dynamic buttons (Wake/Chat + Sleep/Delete)
-- Chat: gateway readiness gate (polls `/gateway-status` before showing chat UI), "Waiting for agent gateway…" loading screen
-- Vite dev proxy for `/api` (with WebSocket support) and `/agent-ui`
-- 204 No Content response handling (delete fix)
+- Dashboard: instant agent tile on create, 3s polling, dynamic buttons (Wake/Chat + Sleep/Delete)
+- Chat: gateway readiness gate, "Waiting for agent gateway…" loading screen
+- Admin pages removed (unnecessary for current scope)
+- Vite dev proxy for `/api` and `/agent-ui`
+
+**Infrastructure (Phase 3):**
+- `scripts/setup/clean_setup.sh` — one-command machine setup (Rust, Docker, Firecracker, rootfs, backend build, .env generation)
+- `scripts/server/start.sh` / `stop.sh` — start/stop all services
+- `scripts/firecracker/build-rootfs.sh` — build rootfs template
+- Rust E2E tests (`backend/tests/e2e_firecracker.rs`) — 5 live tests replacing bash script
+- 12 mock E2E tests (`backend/tests/e2e_workflow.rs`) — integration tests with MockRuntime
 
 **Performance (measured on Azure VM, 4 vCPU, 16GB RAM):**
 - Cold boot to health check: ~3s
-- OpenClaw gateway init (cold boot): ~40-60s (Java JIT)
+- OpenClaw gateway init (cold boot): ~40s (JIT)
 - Snapshot save (sleep): ~11s
 - Snapshot restore (wake): ~400ms
 - Gateway ready after snapshot wake: Instant
 
-**Not in Phase 3:** Jailer security hardening, on-disk snapshot recovery after backend restart, billing, multi-region.
-
-## Phase 4 — Monetization + Hardening (Next)
-**Goal:** Production-ready with billing, security hardening, and operational reliability.
+## Phase 4 — Production Hardening (Next)
+**Goal:** Production-ready with security hardening and operational reliability.
 **Planned:**
 - Firecracker jailer (chroot, seccomp, cgroups isolation)
+- Agent state reconciliation on backend restart (DB status vs actual VM state)
+- TAP allocation persistence (currently in-memory only, lost on restart)
 - On-disk snapshot recovery (survive backend restarts)
+- Health endpoint (`/api/health`) for load balancers
+- Shell injection hardening in `/etc/openclaw-env` (CodeRabbit finding)
+- Structured error responses (consistent error JSON format)
+- Rate limiting per user on agent creation/wake
+
+## Phase 5 — Monetization + Scale
+**Goal:** Revenue generation and multi-tenant scale.
+**Planned:**
 - Stripe billing (free → pro upgrade flow)
 - Cost tracking per model ($)
+- Admin dashboard (user management, system health)
 - Multi-region deployment (snapshot portability to S3)
 - Conversation memory persistence across snapshot cycles
+- Horizontal scaling (multiple backend instances with shared state)
+- Agent templates (pre-configured agents for common use cases)
 
 ## Ideas Explored and Parked
 

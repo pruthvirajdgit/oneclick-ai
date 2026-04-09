@@ -6,6 +6,31 @@ Open-source infrastructure for deploying and managing AI employees within your o
 
 ---
 
+## Demo
+
+### 🤖 Create an Agent
+Choose a model, click create — your agent spins up in a Firecracker microVM in seconds.
+
+<p align="center">
+  <img src="docs/assets/create-agent.gif" alt="Create Agent Demo" width="720" />
+</p>
+
+### 💬 Chat with Your Agent
+Real-time conversation with token streaming. Your agent has full coding capabilities powered by OpenClaw.
+
+<p align="center">
+  <img src="docs/assets/chat-agent.gif" alt="Chat Demo" width="720" />
+</p>
+
+### 📊 Usage Tracking
+Monitor token usage per agent — daily and all-time stats, rate limits, and cost tracking.
+
+<p align="center">
+  <img src="docs/assets/usage-tracking.gif" alt="Usage Tracking Demo" width="720" />
+</p>
+
+---
+
 ## Why OneClick.ai?
 
 | Problem | Solution |
@@ -47,6 +72,51 @@ Browser → Frontend (nginx in Docker, port 80/3000)
 
 PostgreSQL 16 (Docker) ← persistent data
 Redis 7 (Docker)       ← rate limits
+```
+
+## 🔥 Firecracker microVMs
+
+Each AI agent runs inside its own [Firecracker](https://firecracker-microvm.github.io/) microVM — the same technology that powers AWS Lambda and Fargate. This gives you:
+
+### Why Firecracker?
+
+| Benefit | Details |
+|---------|---------|
+| **Hardware-level isolation** | Each agent runs in a dedicated VM with its own kernel — not just a container namespace. A compromised agent cannot affect the host or other agents. |
+| **Blazing fast startup** | Cold boot to healthy in **~3 seconds**. No Docker image pull, no container scheduling overhead. |
+| **Instant snapshot restore** | Sleeping agents wake in **~400ms** via full memory snapshot restore. The agent resumes exactly where it left off — OpenClaw gateway, conversation state, everything. |
+| **True scale-to-zero** | Sleeping agents consume **zero CPU and zero RAM**. Only the snapshot file on disk (~1.5GB) remains. |
+| **Minimal footprint** | Each VM runs with 2 vCPUs and 1.5GB RAM. The Firecracker VMM process itself uses <5MB of memory. |
+
+### Agent Lifecycle
+
+```
+   Create              Wake                Sleep              Delete
+     │                   │                   │                  │
+     ▼                   ▼                   ▼                  ▼
+  ┌──────┐         ┌──────────┐       ┌──────────┐       ┌──────────┐
+  │ Copy │         │Cold Boot │       │ Snapshot │       │ Shutdown │
+  │rootfs│────────▶│  OR      │──────▶│ Memory   │──────▶│ + Delete │
+  │      │         │ Restore  │       │ to Disk  │       │   Files  │
+  └──────┘         └──────────┘       └──────────┘       └──────────┘
+   status:          status:            status:
+   stopped          running            stopped
+
+  Cold boot: ~3s    Gateway: instant   Snapshot: ~11s
+  Gateway: ~40s     (after restore)
+  (JIT compile)
+```
+
+### Networking
+
+Each VM gets a dedicated TAP device on a `/30` subnet (`172.16.0.x`). The backend's `TapManager` allocates and manages TAP devices automatically. NAT via iptables gives VMs internet access for LLM API calls.
+
+### Rootfs Template
+
+The rootfs is a 4GB ext4 image containing the OpenClaw runtime, chat-bridge, and a parameterized init script. Per-VM config (agent name, model, API keys, network) is injected into `/etc/openclaw-env` and `/etc/fc-network` before boot. Rebuild with:
+
+```bash
+sudo ./scripts/firecracker/build-rootfs.sh
 ```
 
 ## Quick Start
