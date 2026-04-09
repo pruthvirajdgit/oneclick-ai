@@ -37,6 +37,8 @@ Keeping an AI agent constantly running is **expensive and wasteful**. Most agent
 
 **OneClick.ai solves this with Firecracker microVMs and snapshot-based hibernation.** When an agent isn't being used, we snapshot its entire memory state and shut down the VM — zero CPU, zero RAM. When a user comes back, we restore the snapshot and the agent picks up exactly where it left off, in under a second. You only pay for compute when agents are actually working.
 
+The entire backend is written in **Rust** — memory-efficient, deterministic, and with no garbage collector pauses. This means the orchestration layer itself has a minimal footprint, so your server's resources go to the agents, not the platform.
+
 | Problem | Solution |
 |---------|----------|
 | Running AI agents 24/7 is expensive | **Snapshot & sleep**: idle agents use 0 CPU/RAM, restore in <1s |
