@@ -1,4 +1,4 @@
-# Phase 1 — Database Schema
+# Database Schema
 
 ## PostgreSQL Tables
 
@@ -21,7 +21,7 @@ CREATE INDEX idx_users_email ON users(email);
 CREATE TABLE agents (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    container_id  TEXT,                        -- Docker container ID
+    container_id  TEXT,                        -- VM ID (fc-{uuid}) or Docker container ID
     container_name TEXT,                       -- agent-{user_id_short}
     status        TEXT NOT NULL DEFAULT 'creating',
                   -- creating | running | stopped | error
@@ -131,7 +131,7 @@ sqlx migrate run
 sqlx migrate revert
 ```
 
-Migration files stored in `/migrations/` directory:
+Migration files stored in `backend/migrations/` directory:
 ```
 migrations/
 ├── 001_create_users.sql

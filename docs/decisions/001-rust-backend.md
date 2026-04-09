@@ -7,7 +7,7 @@ Accepted
 We need a backend language for a multi-tenant AI agent platform that will:
 - Manage thousands of agent container lifecycles concurrently
 - Proxy LLM requests with sub-millisecond overhead
-- Eventually integrate with Firecracker microVMs (written in Rust)
+- Eventually integrate with Firecracker microVMs (written in Rust) — **now done**
 - Run as a single efficient binary on modest hardware
 
 Options considered: Rust, Go, TypeScript (Node.js), Python (FastAPI)
@@ -19,7 +19,7 @@ Options considered: Rust, Go, TypeScript (Node.js), Python (FastAPI)
 
 ### Why Rust over Go
 - Team has Rust experience, no Go experience
-- Firecracker is written in Rust — Phase 3 integration is native (use crates directly, not SDK wrappers)
+- Firecracker is written in Rust — integration is native (fctools crate, not SDK wrappers) — **now proven**
 - Stronger type system enforces clean architecture at compile time
 - The borrow checker is an architectural tool, not a burden, when the design is right
 

@@ -1,31 +1,38 @@
 # ADR-009: Testing Strategy
 
 ## Status
-Accepted
+Accepted — **updated with E2E tests** (mock + live Firecracker)
 
 ## Context
-We need a testing approach that catches real bugs without slowing down a small team. The system has multiple modules (API, orchestrator, scheduler, LLM proxy) that interact with Docker, PostgreSQL, Redis, and external LLM providers.
+We need a testing approach that catches real bugs without slowing down a small team. The system has multiple modules (API, orchestrator, scheduler, LLM proxy) that interact with Firecracker VMs, PostgreSQL, Redis, and external LLM providers.
 
 ## Decision
-**Unit tests + Integration tests for Phase 1. E2E tests deferred.**
+**Unit tests + Integration tests + E2E tests (mock and live).**
 
 ### Unit Tests (per crate)
 - Pure logic testing with all external dependencies mocked
-- `AgentRuntime` trait makes orchestrator fully testable without Docker
+- `AgentRuntime` trait makes orchestrator fully testable without VMs
 - `wiremock` for mocking Groq/OpenRouter HTTP responses
 - Run: `cargo test` — seconds, no infrastructure needed
 
 ### Integration Tests
 - Real PostgreSQL + Redis via `testcontainers` (spun up per test suite)
 - Test actual DB queries, auth flows, rate limiting
-- Mock only the agent runtime (no real Docker containers)
+- Mock only the agent runtime (no real VMs)
 - Run: `cargo test --features integration` — ~30 seconds
 
-### Why no E2E tests in Phase 1
-- Requires full Docker stack + real agent containers
-- Slow (minutes), flaky (Docker timing, network), expensive to maintain
-- Small team gets more value from fast unit + integration feedback
-- Add in Phase 2 when CI/CD pipeline and staging environment exist
+### E2E Tests — Mock Runtime (12 tests)
+- Full HTTP API lifecycle tests using `MockRuntime`
+- No Firecracker, Docker, or KVM needed
+- Tests: health, signup, login, agent CRUD, wake/sleep, chat, auth
+- Run: `cd backend && cargo test --test e2e_workflow`
+
+### E2E Tests — Live Firecracker (5 tests)
+- Real Firecracker VMs with KVM + TAP networking
+- Tests actual cold boot, snapshot save/restore, chat through real VM
+- Requires: KVM, TAP devices, rootfs template, kernel
+- Run: `cargo test --features firecracker --test e2e_firecracker -- --test-threads=1`
+- Must run single-threaded (shared TAP device pool)
 
 ## Test Coverage Targets
 
@@ -51,5 +58,6 @@ We need a testing approach that catches real bugs without slowing down a small t
 ## Consequences
 - Fast feedback loop: unit tests run in seconds
 - Integration tests catch real DB/Redis bugs before deploy
-- No E2E safety net — rely on manual testing for full-stack flows until Phase 2
+- Mock E2E tests validate full API lifecycle without infrastructure
+- Live Firecracker E2E tests validate real VM operations
 - MockRuntime is a first-class citizen, not an afterthought

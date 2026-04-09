@@ -4,9 +4,16 @@
 
 ```
 ┌─────────────────────┐
-│    E2E Tests         │  12 tests, real infra + mock/real runtime
-│    bash tests/       │  Run: on VM with Firecracker
-│    run_e2e.sh        │  (~5 min with real FC VMs)
+│  E2E — Firecracker   │  5 tests, real KVM + TAP + rootfs
+│  cargo test          │  Run: on VM with Firecracker
+│  --features          │  (~2 min with real FC VMs)
+│  firecracker         │
+└──────────┬──────────┘
+           │
+┌──────────┴──────────┐
+│  E2E — Mock Runtime  │  12 tests, full API lifecycle
+│  cargo test          │  Run: anywhere, no infra needed
+│  --test e2e_workflow │  (~10s)
 └──────────┬──────────┘
            │
 ┌──────────┴──────────┐
@@ -21,11 +28,11 @@
 └─────────────────────┘
 ```
 
-## E2E Tests
+## E2E Tests — Mock Runtime (12 tests)
 
-Full end-to-end tests covering the complete agent lifecycle via HTTP API.
+Full end-to-end tests covering the complete agent lifecycle via HTTP API using `MockRuntime` (no Firecracker or Docker needed).
 
-**Location**: `backend/tests/e2e_workflow.rs` + `backend/tests/run_e2e.sh`
+**Location**: `backend/tests/e2e_workflow.rs`
 
 **What they test** (12 test functions):
 1. Health check endpoint
@@ -43,16 +50,33 @@ Full end-to-end tests covering the complete agent lifecycle via HTTP API.
 
 **Running**:
 ```bash
-# Mock runtime (no Firecracker/Docker needed)
 cd backend && cargo test --test e2e_workflow
-
-# Full Firecracker runtime (requires KVM + TAP + rootfs)
-cd backend && bash tests/run_e2e.sh
 ```
 
-**Prerequisites for Firecracker E2E**:
+## E2E Tests — Live Firecracker (5 tests)
+
+Real Firecracker VM tests that exercise the full stack with actual microVMs.
+
+**Location**: `backend/tests/e2e_firecracker.rs`
+
+**Feature flag**: `firecracker`
+
+**What they test**:
+- Real VM cold boot with TAP networking
+- Health check against live chat-bridge
+- Snapshot save (sleep)
+- Snapshot restore (wake) — validates ~400ms wake time
+- VM cleanup and destroy
+
+**Running**:
+```bash
+# Must run single-threaded (shared TAP device pool)
+cargo test --features firecracker --test e2e_firecracker -- --test-threads=1
+```
+
+**Prerequisites for live Firecracker E2E**:
 - KVM enabled (`/dev/kvm` exists)
-- Firecracker + jailer binaries in `/usr/local/bin/`
+- Firecracker binary in PATH
 - Kernel at `/opt/firecracker/vmlinux-6.1`
 - Rootfs template at `/opt/firecracker/rootfs-openclaw.ext4`
 - TAP devices configured
@@ -249,7 +273,13 @@ cargo test
 # Integration tests (needs Docker for testcontainers)
 cargo test --features integration
 
-# All tests
+# Mock E2E tests (no infrastructure needed)
+cargo test --test e2e_workflow
+
+# Live Firecracker E2E tests (needs KVM + TAP + rootfs)
+cargo test --features firecracker --test e2e_firecracker -- --test-threads=1
+
+# All tests (excluding live Firecracker)
 cargo test --all-features
 
 # With output
@@ -280,4 +310,9 @@ jobs:
 
       # Integration tests (GitHub Actions has Docker)
       - run: cargo test --features integration
+
+      # Mock E2E tests
+      - run: cargo test --test e2e_workflow
+
+      # Note: Live Firecracker tests require KVM and run on the VM only
 ```

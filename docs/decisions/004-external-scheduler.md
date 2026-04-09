@@ -51,6 +51,6 @@ DELETE /api/schedules/:id → cancel a job
 
 ## Consequences
 - Need a custom OpenClaw plugin (agent-tools) that registers schedule manipulation tools
-- Agent must be able to call `POST /internal/schedules` (HTTP from container to backend)
+- Agent must be able to call `POST /internal/schedules` (HTTP from VM to backend via TAP network)
 - Scheduler is a tokio task in the backend binary (not a separate service)
 - scheduled_jobs table in PostgreSQL

@@ -1,30 +1,35 @@
-# Phase 1 — Telemetry Guide
+# Telemetry Guide
 
-## What's Baked In (Phase 1)
+## What's Baked In
 
-### 1. Structured JSON Logs
+### 1. Structured Logs (daily rotating files)
 
-All logs are JSON via `tracing` + `tracing-subscriber`:
+All logs are written via `tracing` + `tracing-appender` to daily rotating files in the `logs/` directory:
 
 ```json
 {"timestamp":"2026-04-03T10:00:00Z","level":"INFO","target":"orchestrator","message":"Agent waking","agent_id":"abc-123"}
-{"timestamp":"2026-04-03T10:00:07Z","level":"INFO","target":"orchestrator","message":"Agent awake","agent_id":"abc-123","duration_ms":7200}
-{"timestamp":"2026-04-03T10:00:08Z","level":"INFO","target":"llm_proxy","message":"LLM call","provider":"groq","model":"llama-3.3-70b","tokens_in":1250,"tokens_out":380,"latency_ms":450}
+{"timestamp":"2026-04-03T10:00:03Z","level":"INFO","target":"orchestrator","message":"Agent awake","agent_id":"abc-123","duration_ms":3200}
+{"timestamp":"2026-04-03T10:00:04Z","level":"INFO","target":"llm_proxy","message":"LLM call","provider":"groq","model":"llama-3.3-70b","tokens_in":1250,"tokens_out":380,"latency_ms":450}
 ```
+
+**RUST_LOG** includes `oneclick_shared=warn` to reduce noise from shared crate logging.
 
 **View logs:**
 ```bash
-# All backend logs
-docker compose logs -f backend
+# All backend logs (daily rotating files)
+tail -f logs/*.log
 
 # Filter by level
-docker compose logs backend | jq 'select(.level == "ERROR")'
+cat logs/*.log | jq 'select(.level == "ERROR")'
 
 # Filter by module
-docker compose logs backend | jq 'select(.target == "orchestrator")'
+cat logs/*.log | jq 'select(.target == "orchestrator")'
 
 # Filter by agent
-docker compose logs backend | jq 'select(.agent_id == "abc-123")'
+cat logs/*.log | jq 'select(.agent_id == "abc-123")'
+
+# Docker service logs (frontend, postgres, redis)
+docker compose logs -f frontend
 ```
 
 ### 2. Prometheus Metrics
@@ -112,7 +117,7 @@ scrape_configs:
   - job_name: 'oneclick-backend'
     scrape_interval: 15s
     static_configs:
-      - targets: ['backend:8080']
+      - targets: ['host.docker.internal:8080']   # Backend runs on host
 ```
 
 Access:
@@ -144,11 +149,11 @@ increase(rate_limit_hits_total[1h])
 
 ```bash
 # Slowest agent wakes
-docker compose logs backend | jq 'select(.message == "Agent awake") | {agent_id, duration_ms}' | sort_by(.duration_ms) | tail
+cat logs/*.log | jq 'select(.message == "Agent awake") | {agent_id, duration_ms}' | sort_by(.duration_ms) | tail
 
 # LLM fallback events (indicates primary provider issues)
-docker compose logs backend | jq 'select(.level == "WARN" and .target == "llm_proxy")'
+cat logs/*.log | jq 'select(.level == "WARN" and .target == "llm_proxy")'
 
 # All errors in last hour
-docker compose logs --since 1h backend | jq 'select(.level == "ERROR")'
+cat logs/*.log | jq 'select(.level == "ERROR")'
 ```

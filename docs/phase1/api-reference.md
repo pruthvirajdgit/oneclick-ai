@@ -1,4 +1,4 @@
-# Phase 1 — API Reference
+# API Reference
 
 All endpoints return JSON. Auth required unless noted.
 
@@ -61,7 +61,7 @@ List user's agents.
 ```
 
 ### POST /api/agents
-Create a new agent. Triggers container creation.
+Create a new agent. Triggers VM creation (Firecracker) or container creation (Docker).
 
 ```json
 // Request (all optional — defaults used)
@@ -89,16 +89,16 @@ Agent details.
 ```
 
 ### DELETE /api/agents/:id
-Delete agent and its container.
+Delete agent and its VM/container.
 
-```json
-// Response 204 (no content)
+```
+// Response 204 No Content
 ```
 
 ---
 
 ### POST /api/agents/:id/wake
-Wake a sleeping agent. Blocks until healthy or returns error.
+Wake a sleeping agent. Uses snapshot restore (~400ms) or cold boot (~3s) if no snapshot exists.
 
 ```json
 // Response 200
@@ -111,7 +111,7 @@ Wake a sleeping agent. Blocks until healthy or returns error.
 ---
 
 ### POST /api/agents/:id/sleep
-Put a running agent to sleep (snapshot VM state, stop container).
+Put a running agent to sleep (snapshot VM state, stop VM).
 
 ```json
 // Response 200
@@ -167,7 +167,7 @@ WebSocket connection for real-time chat with token streaming.
 { "type": "error", "message": "Agent failed to start" }
 ```
 
-**Note**: The chat pipeline uses an SSE bridge inside agent containers (chat-bridge.js on port 3001). The backend parses SSE events and forwards tokens as WebSocket chunks. If the bridge returns 503 (gateway not ready), the backend retries up to 10 times.
+**Note**: The chat pipeline uses an SSE bridge inside agent VMs (chat-bridge.js on port 3001). The backend parses SSE events and forwards tokens as WebSocket chunks. If the bridge returns 503 (gateway not ready), the backend retries up to 10 times.
 
 ---
 
@@ -273,7 +273,7 @@ Real-time notification stream.
 
 ## Internal Endpoints (Agent → Backend)
 
-These are called by agent containers, not by users.
+These are called by agent VMs, not by users.
 
 ### POST /internal/llm/v1/chat/completions
 LLM proxy. Accepts OpenAI-compatible request, routes to Groq/OpenRouter.

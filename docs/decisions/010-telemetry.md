@@ -7,10 +7,11 @@ Accepted
 We need observability to understand what's happening in production: which agents are active, how fast LLM calls are, whether the scheduler is working, and when things go wrong.
 
 ## Decision
-**Structured logging + Prometheus metrics endpoint baked in from day 1. Monitoring stack (Grafana) and tracing (OpenTelemetry) deferred.**
+**Structured logging via `tracing` + `tracing-appender` (daily rotating files) + Prometheus metrics endpoint baked in from day 1. Monitoring stack (Grafana) and tracing (OpenTelemetry) deferred.**
 
 ### Phase 1: Baked In
-- **Structured JSON logs** via `tracing` crate → stdout → `docker compose logs`
+- **Structured logs** via `tracing` crate → daily rotating files in `logs/` directory
+- **RUST_LOG** includes `oneclick_shared=warn` to reduce noise
 - **Prometheus metrics** via `metrics` + `metrics-exporter-prometheus` → `/metrics` endpoint
 
 ### Later: Opt-in Monitoring Stack

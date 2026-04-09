@@ -1,4 +1,4 @@
-# Phase 1 — Build Specification
+# Build Specification
 
 ## Success Criteria
 
@@ -7,23 +7,26 @@
 ✅ Chat response in <10s (including wake from sleep)
 ✅ Idle agent uses 0 CPU, 0 RAM
 ✅ Scheduled job runs even when agent was sleeping
-✅ 10 concurrent users on one server (4 CPU, 8GB RAM)
+✅ 10 concurrent users on one server (4 CPU, 16GB RAM)
 ✅ Free tier enforced (50 req/day cutoff)
 ✅ Swagger UI for all API testing
+✅ Frontend with React 19 + Vite + Tailwind + shadcn/ui
+✅ Firecracker microVM isolation with ~400ms snapshot wake
 ```
 
 ## User Journey
 
 ```
-1. User visits /swagger-ui/ (no frontend in Phase 1)
-2. POST /api/auth/signup → creates account, returns JWT
-3. POST /api/agents → agent container spins up (~10s)
-4. WS /api/agents/:id/chat → send message, get AI response
-5. Agent sets up cron: "check flights every 3h" → schedule created
-6. User closes browser
-7. Agent sleeps after 15 min idle (zero resources)
-8. 3 hours later → scheduler wakes agent → runs task → notification created
-9. User returns → sends message → agent wakes in ~5-10s → responds
+1. User visits frontend (http://localhost)
+2. Signs up → creates account, returns JWT
+3. Creates agent → Firecracker VM spins up (~3s to healthy)
+4. Waits for gateway ready (~40s on cold boot, instant on snapshot)
+5. Chats with agent → send message, get AI response (streaming)
+6. Agent sets up cron: "check flights every 3h" → schedule created
+7. User closes browser
+8. Agent sleeps after 15 min idle (snapshot saved, ~11s, zero resources)
+9. 3 hours later → scheduler wakes agent (~400ms) → runs task → notification created
+10. User returns → sends message → agent wakes in ~400ms → responds
 ```
 
 ## Modules
@@ -46,11 +49,14 @@
 
 ### 3. orchestrator (agent lifecycle)
 - AgentRuntime trait definition
-- DockerRuntime implementation (bollard)
+- FirecrackerRuntime implementation (fctools SDK, TAP networking, snapshots)
+- DockerRuntime implementation (bollard, fallback)
+- MockRuntime for testing
 - Per-agent locking (DashMap<AgentId, Mutex>)
-- Container creation with proper config, volumes, network
+- VM creation with rootfs copy, TAP allocation, config injection
 - Health check polling
 - Message queue delivery on wake
+- Orphaned Firecracker process cleanup on cold boot
 
 ### 4. llm-proxy (LLM routing)
 - OpenAI-compatible proxy endpoint
@@ -93,41 +99,42 @@
 - Each tool is an HTTP call to backend's internal API
 - Installed into agent container via Dockerfile
 
-## What's NOT in Phase 1
+## What's NOT Yet Built
 
-| Feature | Deferred to |
+| Feature | Planned For |
 |---------|-------------|
-| Web frontend | Phase 1.5 (after backend is stable) |
-| CRIU checkpoint/restore | Phase 2 |
-| Firecracker microVMs | Phase 3 |
-| Telegram/Slack/WhatsApp channels | Phase 1.5 |
-| Stripe billing | Phase 2 |
-| Multi-region | Phase 3 |
-| Custom agent personalities | Phase 1.5 |
-| Graceful sleep hooks (state dump) | Phase 1.5 |
+| Telegram/Slack/WhatsApp channels | Phase 4 |
+| Stripe billing | Phase 4 |
+| Multi-region | Phase 4+ |
+| Custom agent personalities | Phase 4 |
+| Jailer security for Firecracker | Phase 4 |
+| On-disk snapshot recovery | Phase 4 |
 
 ## Infrastructure
 
 ```yaml
-# docker-compose.yml
+# docker-compose.yml (Frontend + PostgreSQL + Redis only, NO backend)
 services:
-  traefik:     # Reverse proxy (SSL in prod, passthrough in dev)
-  backend:     # Rust binary (all 10 modules)
+  frontend:    # React 19 + nginx (proxies /api to host.docker.internal:8080)
   postgres:    # PostgreSQL 16
   redis:       # Redis 7
 
-# Dynamic (created by orchestrator):
-  agent-*:     # OpenClaw containers (one per user)
+# Backend runs on HOST (bare metal, not containerized)
+# Needs direct KVM access for Firecracker microVMs
+# Started via: ./scripts/server/start.sh
+
+# Firecracker VMs (created by orchestrator):
+#   One VM per user, TAP networking 172.16.0.x/30
 ```
 
 ## Environment Variables
 
 ```bash
 # Database
-DATABASE_URL=postgres://oneclick:password@postgres:5432/oneclick
+DATABASE_URL=postgres://oneclick:oneclick@localhost:5432/oneclick
 
 # Redis
-REDIS_URL=redis://redis:6379
+REDIS_URL=redis://localhost:6379
 
 # LLM Providers
 GROQ_API_KEY=gsk_...
@@ -135,6 +142,16 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 # Auth
 JWT_SECRET=random-64-char-string
+
+# Agent runtime
+AGENT_RUNTIME=firecracker     # or "docker"
+
+# Firecracker config
+FC_KERNEL_PATH=/opt/firecracker/vmlinux-6.1
+FC_ROOTFS_TEMPLATE=/opt/firecracker/rootfs-openclaw.ext4
+FC_VCPU_COUNT=2
+FC_MEM_SIZE_MIB=1536
+FC_TAP_COUNT=4
 
 # Agent config
 AGENT_IMAGE=oneclick-agent:latest

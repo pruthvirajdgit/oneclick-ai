@@ -5,22 +5,24 @@ Accepted
 
 ## Context
 Agent containers need to call LLM APIs (Groq, OpenRouter) for inference. Two options:
-1. Agents call providers directly (API key in each container's env)
+1. Agents call providers directly (API key in each VM's env)
 2. Agents call our backend proxy, which routes to providers
 
 ## Decision
 All LLM calls from agents go through an **LLM proxy** endpoint in the backend.
 
 ```
-Agent → POST http://backend:8080/internal/llm/v1/chat/completions
+Agent VM → POST http://172.16.0.{host-ip}:8080/internal/llm/v1/chat/completions
   → Backend routes to Groq (primary) → OpenRouter (fallback)
   → Backend logs usage → returns response to agent
 ```
 
 Agent's OpenClaw config points to our proxy as the "OpenRouter" base URL:
 ```
-OPENROUTER_BASE_URL=http://backend:8080/internal/llm/v1
+OPENROUTER_BASE_URL=http://172.16.0.{host-ip}:8080/internal/llm/v1
 ```
+
+(For Docker runtime, agents reach the backend at `http://host.docker.internal:8080`)
 
 ## Rationale
 
@@ -51,4 +53,6 @@ Total: ~15,450 free requests/day → 100 users × 50 req/day with 3x headroom.
 - All LLM traffic routes through backend (single point of failure for inference)
 - Slight latency overhead (~5ms per proxy hop)
 - Backend must handle streaming responses (SSE passthrough)
-- API keys only stored in backend, not in agent containers
+- API keys only stored in backend, not in agent VMs
+- MAX_MESSAGE_CHARS = 200,000 (supports large context windows)
+- OpenClaw contextTokens set to 65,536

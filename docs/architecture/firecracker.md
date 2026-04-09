@@ -2,14 +2,14 @@
 
 ## Overview
 
-OneClick.ai uses Firecracker microVMs as an alternative to Docker containers for running AI agents. Firecracker provides hardware-level VM isolation with near-instant (~116ms) snapshot restore, enabling true scale-to-zero with sub-second wake times.
+OneClick.ai uses Firecracker microVMs as the **primary runtime** for running AI agents (selected via `AGENT_RUNTIME=firecracker`). Docker is available as an alternative runtime. Firecracker provides hardware-level VM isolation with ~400ms snapshot restore, enabling true scale-to-zero with sub-second wake times.
 
 ## Why Firecracker?
 
 | Metric | Docker | Firecracker |
 |--------|--------|-------------|
-| Wake from sleep | 5-10s (start) | **116ms** (snapshot restore) |
-| Cold boot | 5-7 min (gateway JIT) | 1.1s (VM) + 26s (gateway) |
+| Wake from sleep | 5-10s (start) | **~400ms** (snapshot restore) |
+| Cold boot | 5-7 min (gateway JIT) | ~3s (healthy) + ~40s (gateway JIT) |
 | Isolation | Container (cgroups/namespaces) | Hardware VM (KVM) |
 | Snapshot | CRIU (complex, fragile) | Native VM snapshots |
 | Memory overhead | Shared kernel | Dedicated kernel (~20MB) |
@@ -54,13 +54,14 @@ Host Machine
 5. Return VM ID: `fc-{agent_uuid}`
 
 ### Cold Boot (first start)
-1. Start Firecracker process with API socket
-2. Configure VM via fctools: kernel, rootfs, network interface
-3. Boot VM
-4. VM init script reads `/etc/fc-network`, configures networking
-5. VM init script reads `/etc/openclaw-env`, starts OpenClaw + chat-bridge
-6. Backend polls health check (TCP probe to guest_ip:3001)
-7. Total time: ~1.1s to health check pass, ~26s until gateway ready for chat
+1. Clean up any orphaned Firecracker processes for this agent
+2. Start Firecracker process with API socket
+3. Configure VM via fctools: kernel, rootfs, network interface
+4. Boot VM
+5. VM init script reads `/etc/fc-network`, configures networking
+6. VM init script reads `/etc/openclaw-env`, starts OpenClaw + chat-bridge
+7. Backend polls health check (TCP probe to guest_ip:3001)
+8. Total time: ~3s to health check pass, ~40s until gateway ready for chat (JIT)
 
 ### Snapshot Sleep
 1. Pause VM (PATCH /vm → Paused)
@@ -74,7 +75,7 @@ Host Machine
 2. Load snapshot from in-memory `VmSnapshot` (or from disk)
 3. Resume VM
 4. Health check passes immediately (processes were frozen mid-execution)
-5. **Total time: ~116ms** 🚀
+5. **Total time: ~400ms** 🚀
 
 ### Destroy
 1. Shutdown VM process (if running)
@@ -99,7 +100,9 @@ The init script (`/sbin/init`) at boot:
 6. Starts chat-bridge.js (port 3001)
 7. Starts pair-device.js (auto-approves device pairing)
 
-Build with: `sudo bash local_poc/firecracker/scripts/build-rootfs-template.sh`
+Build with: `sudo bash scripts/firecracker/build-rootfs.sh`
+
+Template location: `/opt/firecracker/rootfs-openclaw.ext4`
 
 ## TAP Networking
 
@@ -158,12 +161,23 @@ Set in 4 locations:
 - Rootfs `/usr/sbin/fc-init` (runtime config generation)
 - Rootfs `/usr/local/bin/oneclick-entrypoint.sh` (runtime config generation)
 
+## Agent States
+
+```
+creating → stopped → running → stopped (sleep) → running (wake) → deleted
+```
+
+- `creating`: Rootfs copied, TAP allocated, config injected
+- `stopped`: VM not running, rootfs on disk (possibly with snapshot)
+- `running`: Firecracker process active, VM booted or restored
+- `deleted`: All resources cleaned up (rootfs, snapshots, TAP released)
+
 ## Performance (measured on Azure VM, 4 vCPU, 16GB RAM)
 
 | Operation | Duration |
 |-----------|----------|
-| VM cold boot to health check | ~35ms (Firecracker boot) + ~3s (chat-bridge healthy) |
-| OpenClaw gateway init (cold boot) | ~40-60s (Java JIT compile) |
+| VM cold boot to health check | ~3s |
+| OpenClaw gateway init (cold boot) | ~40s (JIT compile) |
 | Snapshot save (sleep) | ~11s |
 | Snapshot restore (wake) | ~400ms |
 | Gateway ready after snapshot restore | Instant (process state preserved) |

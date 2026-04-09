@@ -1,17 +1,46 @@
-# ADR-007: No Firecracker in Phase 1
+# ADR-007: Firecracker Implementation
 
 ## Status
-Accepted
+**Superseded** — Originally deferred Firecracker to Phase 3. **Now fully implemented and the primary runtime.**
 
 ## Context
-Firecracker microVMs offer sub-200ms cold starts, native snapshots, and hardware-level isolation. We evaluated it as the agent runtime for Phase 1.
+Firecracker microVMs offer sub-second snapshot restores, native snapshots, and hardware-level isolation. Originally evaluated and deferred for Phase 1 due to infrastructure complexity.
 
-## Decision
-**Use Docker for Phase 1. Design for Firecracker in Phase 3.**
+## Original Decision (Phase 1)
+Use Docker for Phase 1. Design for Firecracker in Phase 3.
 
-The `AgentRuntime` trait abstraction (ADR-002) ensures the swap is a matter of implementing a new struct, not rewriting the system.
+## Current State (Implemented)
+Firecracker is now the **primary runtime** (`AGENT_RUNTIME=firecracker`). Docker remains as a fallback.
 
-## Analysis
+### What was built
+- `FirecrackerRuntime` struct implementing `AgentRuntime` trait
+- `TapManager` for TAP device allocation (172.16.0.x/30 subnets)
+- Custom rootfs template with OpenClaw, chat-bridge, pair-device
+- Parameterized init script (`/sbin/init`) with network + env config injection
+- Native VM snapshots via fctools SDK (snapshot save/restore)
+- Orphaned Firecracker process cleanup on cold boot
+- KVM permissions via udev rule
+
+### Measured performance
+| Operation | Duration |
+|-----------|----------|
+| Cold boot to healthy | ~3s |
+| OpenClaw gateway ready (cold) | ~40s (JIT) |
+| Snapshot save (sleep) | ~11s |
+| Snapshot restore (wake) | ~400ms |
+| Gateway after restore | Instant |
+
+### Key configuration
+```bash
+AGENT_RUNTIME=firecracker
+FC_KERNEL_PATH=/opt/firecracker/vmlinux-6.1
+FC_ROOTFS_TEMPLATE=/opt/firecracker/rootfs-openclaw.ext4
+FC_VCPU_COUNT=2
+FC_MEM_SIZE_MIB=1536
+FC_TAP_COUNT=4
+```
+
+## Analysis (original, still relevant)
 
 ### What Firecracker provides
 - KVM-based microVM in ~125ms boot
@@ -20,42 +49,25 @@ The `AgentRuntime` trait abstraction (ADR-002) ensures the swap is a matter of i
 - Native snapshot/restore
 - REST API for VM lifecycle
 
-### What Firecracker does NOT provide
-- No Docker images — must build Linux kernel images + root filesystems
-- No Kubernetes/orchestration — build your own
-- No networking stack — manage TAP devices, IP allocation, firewalls manually
-- No storage management — manage block devices, mount points
-- No ecosystem — no pre-built images, monitoring tools, etc.
+### What Firecracker does NOT provide (we built these)
+- No Docker images — we built Linux rootfs templates with OpenClaw
+- No orchestration — TapManager + FirecrackerRuntime handle lifecycle
+- No networking stack — TAP devices + iptables MASQUERADE for NAT
+- No storage management — rootfs copies with `cp --reflink=auto`
 
-### Security argument
-Firecracker's main advantage is hardware isolation (each VM runs its own kernel). This matters when running **untrusted user code** (like AWS Lambda).
-
-For OneClick.ai Phase 1:
-- Agents run trusted OpenClaw code, not arbitrary user code
-- Cloud provider is responsible for kernel security
-- Docker's namespace/cgroup isolation is sufficient
-
-### Performance argument
-- Firecracker snapshot restore: ~100-200ms
-- Docker + CRIU restore: ~1-2s
-- Docker cold start: ~5-10s
-
-For AI agents, even 5-10s is acceptable — users expect a brief pause before an AI responds.
-
-### Portability argument (Phase 3 value)
-Firecracker snapshots are portable — store in S3, restore on any machine. This enables:
-- Multi-region deployment
-- Live migration between servers
-- Cold storage of idle agents to S3 ($0.023/GB/month vs RAM costs)
-
-This is valuable at 10K+ users but not needed at 100.
-
-### Effort comparison
-- Docker Phase 1: days of work (already have a working prototype)
-- Firecracker Phase 1: months of work (kernel images, networking, orchestrator, storage)
+### Infrastructure effort (actual)
+Building the Firecracker integration required:
+- Custom rootfs build script (`scripts/firecracker/build-rootfs.sh`)
+- TAP networking setup + IP allocation
+- Init script for VM boot configuration
+- fctools SDK integration for VM lifecycle + snapshots
+- Orphaned process cleanup logic
+- 5 live E2E tests + 12 mock E2E tests
 
 ## Consequences
-- 5-10s cold starts (acceptable for Phase 1)
-- No hardware isolation (acceptable — trusted code only)
-- No snapshot portability (single server is fine for Phase 1)
-- Clean migration path via AgentRuntime trait when ready for Phase 3
+- Backend must run on the host (not in Docker) for KVM access
+- Backend Dockerfile was removed
+- 4GB per rootfs copy, 1.5GB per snapshot on disk
+- 16 VM limit (TAP pool, configurable)
+- In-memory snapshots lost on backend restart (on-disk recovery planned)
+- No jailer security yet (planned for Phase 4)
