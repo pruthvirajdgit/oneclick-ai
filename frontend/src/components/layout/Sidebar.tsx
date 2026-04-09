@@ -6,7 +6,6 @@ import {
   CalendarClock,
   BarChart3,
   Bell,
-  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -77,23 +76,6 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
-
-      <div className="px-3 pb-4 border-t border-border pt-3">
-        <NavLink
-          to="/admin"
-          className={({ isActive }) =>
-            cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-              isActive
-                ? "bg-[#8b5cf6]/10 text-[#8b5cf6]"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
-            )
-          }
-        >
-          <ShieldCheck className="h-5 w-5" />
-          Admin
-        </NavLink>
-      </div>
     </aside>
   );
 }

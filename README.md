@@ -11,7 +11,7 @@ Open-source infrastructure for deploying and managing AI employees within your o
 | Problem | Solution |
 |---------|----------|
 | AI assistants are stateless (ChatGPT forgets everything) | Agents persist state, memory, and context across sessions |
-| Setting up AI agents requires deep technical knowledge | `docker compose up` — done |
+| Setting up AI agents requires deep technical knowledge | One setup script — done |
 | Running AI agents 24/7 is expensive | Scale-to-zero: sleeping agents use 0 CPU/RAM |
 | LLM API keys scattered across tools | Centralized LLM proxy with usage tracking and rate limiting |
 | No scheduling or automation | Built-in cron scheduler — agents execute tasks while you sleep |
@@ -27,44 +27,54 @@ Open-source infrastructure for deploying and managing AI employees within your o
 
 ## Architecture
 
-Single Rust binary managing per-user AI agent containers with scale-to-zero. React frontend with in-app chat UI.
+Rust backend on the host managing per-user AI agents in Firecracker microVMs with scale-to-zero. React frontend with in-app chat UI served via nginx in Docker.
 
 ```
-Browser → Frontend (nginx, port 80/3000)
+Browser → Frontend (nginx in Docker, port 80/3000)
               ├── Static React app (dashboard, chat, auth)
-              └── /api/* → Rust Backend (port 8080)
+              └── /api/* → Rust Backend (on host, port 8080)
                               ├── API (auth, agents, schedules, usage, notifications)
-                              ├── Orchestrator (Docker container lifecycle)
+                              ├── Orchestrator (Firecracker VM lifecycle)
                               ├── LLM Proxy (Groq → OpenRouter fallback)
                               ├── Scheduler (cron jobs — runs while agents sleep)
                               ├── Monitor (idle detection → auto-sleep)
                               └── Notifications (real-time broadcast)
                                    │
-                                   ↓ Docker socket
+                                   ↓ TAP network (172.16.0.x)
                          ┌─────────┼─────────┐
-                         agent-a    agent-b    agent-c  (OpenClaw containers)
-                         (chat-bridge.js on :3001, gateway on :3000)
+                         agent-a    agent-b    agent-c  (Firecracker microVMs)
+                         (OpenClaw gateway :3000, chat-bridge :3001)
 
-PostgreSQL 16 ← persistent data
-Redis 7       ← rate limits
+PostgreSQL 16 (Docker) ← persistent data
+Redis 7 (Docker)       ← rate limits
 ```
 
 ## Quick Start
 
+### Fresh machine setup
+
 ```bash
 git clone https://github.com/pruthvirajdgit/oneclick-ai.git
 cd oneclick-ai
-cp .env.example .env      # add your GROQ_API_KEY (free at console.groq.com)
 
-# Build agent image
-docker build -t oneclick-agent:latest agent-runtime/
+# Install everything + generate .env (Rust, Docker, Firecracker, rootfs, backend build)
+sudo ./scripts/setup/clean_setup.sh
+
+# Add your Groq API key (free at console.groq.com)
+nano .env   # update GROQ_API_KEY
 
 # Start the stack
-docker compose up -d --build
+./scripts/server/start.sh
 
 # Frontend at http://localhost:3000
-# API at http://localhost:8080
+# Backend at http://localhost:8080
 # Swagger UI at http://localhost:8080/swagger-ui/
+```
+
+### Stop everything
+
+```bash
+./scripts/server/stop.sh
 ```
 
 That's it. Create an account, spin up an agent, and start chatting — all from the browser.
@@ -74,7 +84,8 @@ That's it. Create an account, spin up an agent, and start chatting — all from 
 | Feature | Details |
 |---------|---------|
 | 🤖 **AI Agents** | Each user gets a personal agent (OpenClaw-powered) |
-| 💤 **Scale-to-Zero** | Idle agents auto-sleep — wake on demand (~5-7 min cold start on Docker, <200ms planned with Firecracker) |
+| 🔥 **Firecracker microVMs** | Hardware-level isolation, ~3s cold boot, ~400ms snapshot wake |
+| 💤 **Scale-to-Zero** | Idle agents auto-sleep — wake on demand with instant snapshot restore |
 | 🧠 **Persistent Memory** | Agents remember conversations across sessions |
 | ⏰ **Scheduling** | Cron-based task execution (agents work while you sleep) |
 | 🔀 **LLM Proxy** | Multi-provider fallback (Groq → OpenRouter), usage tracking |
@@ -90,12 +101,12 @@ That's it. Create an account, spin up an agent, and start chatting — all from 
 oneclick-ai/
 ├── frontend/                   # React 19 + Vite + Tailwind + shadcn/ui
 │   ├── src/pages/              # Auth, Dashboard, Chat, Usage, Schedules, Notifications
-│   ├── nginx.conf              # Serves static files + proxies /api to backend
+│   ├── nginx.conf              # Serves static files + proxies /api to backend on host
 │   └── Dockerfile              # Multi-stage build (node → nginx)
 ├── backend/                    # Rust workspace (10 crates)
 │   ├── crates/
 │   │   ├── api/                # HTTP routes, middleware, WebSocket, SSE bridge
-│   │   ├── orchestrator/       # Agent container lifecycle (Docker, future Firecracker)
+│   │   ├── orchestrator/       # Agent VM lifecycle (Firecracker + Docker runtimes)
 │   │   ├── llm-proxy/          # Multi-provider LLM routing with SSE streaming
 │   │   ├── scheduler/          # Background cron runner
 │   │   ├── monitor/            # Idle agent detection
@@ -105,19 +116,38 @@ oneclick-ai/
 │   │   ├── shared/             # Config, DB, Redis, auth, models
 │   │   └── webhook-receiver/   # Stub for Telegram/Slack integration
 │   ├── migrations/             # 6 sqlx migration files
-│   └── tests/                  # Integration tests
+│   └── tests/                  # Integration + E2E tests
 ├── agent-runtime/              # Custom OpenClaw agent image
 │   ├── Dockerfile              # Extends ghcr.io/openclaw/openclaw:latest
 │   ├── chat-bridge.js          # HTTP→WebSocket bridge (port 3001)
 │   ├── pair-device.js          # Auto-approve device pairing
 │   ├── entrypoint.sh           # Config generation + gateway startup
 │   └── oneclick-tools.js       # Agent tools plugin (schedules, notifications)
+├── scripts/
+│   ├── setup/
+│   │   └── clean_setup.sh      # Full machine setup from scratch
+│   ├── server/
+│   │   ├── start.sh            # Start Docker services + backend
+│   │   └── stop.sh             # Stop everything
+│   └── firecracker/
+│       ├── build-rootfs.sh     # Build Firecracker rootfs template
+│       ├── setup-network.sh    # Manual TAP setup (debug)
+│       └── teardown-network.sh # Manual TAP teardown (debug)
 ├── .context_bank/              # AI-readable project knowledge base
-├── docker-compose.yml          # Base stack (Frontend + Backend + PG + Redis)
-├── docker-compose.override.yml # Dev overrides (debug ports)
-├── docker-compose.prod.yml     # Prod overlay (TLS, read-only socket)
+├── docker-compose.yml          # Frontend + PostgreSQL + Redis (backend runs on host)
+├── docker-compose.prod.yml     # Prod overlay (hide DB ports)
 └── .env.example                # Environment variable template
 ```
+
+## Service Topology
+
+| Service | Runs In | Port | Notes |
+|---------|---------|------|-------|
+| Frontend (nginx) | Docker | 80, 3000 | Serves React app, proxies /api to backend |
+| PostgreSQL | Docker | 5432 | Persistent data |
+| Redis | Docker | 6379 | Rate limits, caching |
+| Backend | Host | 8080 | Needs KVM access for Firecracker |
+| Firecracker VMs | Host (KVM) | TAP network | Each agent gets a microVM |
 
 ## Key Endpoints
 
@@ -126,7 +156,8 @@ oneclick-ai/
 | POST | /api/auth/signup | — | Create account |
 | POST | /api/auth/login | — | Get JWT |
 | POST | /api/agents | JWT | Create agent |
-| POST | /api/agents/{id}/wake | JWT | Wake a sleeping agent (~450s budget) |
+| POST | /api/agents/{id}/wake | JWT | Wake a sleeping agent |
+| POST | /api/agents/{id}/sleep | JWT | Snapshot and sleep an agent |
 | WS | /api/agents/{id}/chat | JWT | Real-time chat with token streaming |
 | GET | /api/agents | JWT | List your agents |
 | POST | /api/schedules | JWT | Create scheduled task |
@@ -138,17 +169,23 @@ oneclick-ai/
 ## Development
 
 ```bash
+# Unit + integration tests (mock runtime, no VMs)
 cd backend
-cargo test --workspace                              # Unit tests (no external deps)
-cargo test --workspace --features integration       # Integration tests (needs Postgres)
+cargo test --workspace --features integration
+
+# Live Firecracker E2E tests (requires running backend + Firecracker setup)
+cargo test --features firecracker --test e2e_firecracker -- --test-threads=1
 ```
 
-## Roadmap
+## Performance
 
-- **Phase 1** ✅ Rust backend, Docker containers, scale-to-zero, LLM proxy, scheduling
-- **Phase 1.5** ✅ E2E verified — full chat pipeline, sleep/wake, multi-tenant isolation
-- **Phase 2** ✅ React frontend with in-app chat, SSE token streaming, WebSocket bridge
-- **Phase 3** — Firecracker microVMs (<200ms wake, VM isolation, snapshot portability)
+| Metric | Firecracker Runtime |
+|--------|---------------------|
+| Cold boot to healthy | ~3s |
+| OpenClaw gateway ready (cold) | ~40s (JIT compile) |
+| Wake from snapshot | **~400ms** |
+| Gateway ready (snapshot) | Instant |
+| Snapshot sleep | ~11s |
 
 ## Configuration
 
@@ -160,6 +197,8 @@ All configuration via environment variables. See [`.env.example`](.env.example) 
 | `JWT_SECRET` | Yes | Random string for token signing |
 | `INTERNAL_SECRET` | Yes | Agent↔backend authentication |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `AGENT_RUNTIME` | No | `firecracker` (default) or `docker` |
+| `FC_ROOTFS_TEMPLATE` | No | Path to rootfs image (default: `/opt/firecracker/rootfs-openclaw.ext4`) |
 
 ## License
 

@@ -59,8 +59,9 @@ fn char_total(messages: &[ChatMessage]) -> usize {
 }
 
 /// Maximum total character count for message content sent to providers.
-/// Rough heuristic (~2-3 chars per token) to stay within TPM limits.
-const MAX_MESSAGE_CHARS: usize = 8000;
+/// Llama 3.3 70B supports 128k tokens (~512k chars). We cap at 200k chars
+/// to prevent abuse while preserving full conversation context.
+const MAX_MESSAGE_CHARS: usize = 200_000;
 
 fn truncate_content(val: &mut serde_json::Value, max: usize) {
     match val {
