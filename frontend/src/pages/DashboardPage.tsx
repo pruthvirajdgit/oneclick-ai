@@ -65,7 +65,7 @@ const STATUS_CONFIG: Record<
   creating: { dot: "bg-amber-400 animate-pulse", label: "Creating…", variant: "outline" },
 };
 
-const REFRESH_INTERVAL = 5_000;
+const REFRESH_INTERVAL = 3_000;
 
 // ── Component ──────────────────────────────────────────────────
 export default function DashboardPage() {
@@ -125,16 +125,6 @@ export default function DashboardPage() {
   async function handleCreate() {
     setCreating(true);
     try {
-      // Fire and forget — don't await the full response
-      api.post("/agents", { model }).then(() => {
-        fetchAgents(false);
-      }).catch((err) => {
-        toast.error(err instanceof Error ? err.message : "Agent creation failed");
-        fetchAgents(false);
-      });
-      toast.success("Agent is being created…");
-      setCreateOpen(false);
-      setModel("groq/llama-3.3-70b-versatile");
       // Add a temporary "creating" agent to show immediately
       setAgents((prev) => [
         {
@@ -147,6 +137,19 @@ export default function DashboardPage() {
         },
         ...prev,
       ]);
+      setCreateOpen(false);
+      toast.success("Agent is being created…");
+      setModel("groq/llama-3.3-70b-versatile");
+
+      // Fire API call — refresh agents list when done
+      api.post("/agents", { model }).then(() => {
+        fetchAgents(false);
+      }).catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Agent creation failed");
+        // Remove temp tile on failure
+        setAgents((prev) => prev.filter((a) => a.id !== "creating-temp"));
+        fetchAgents(false);
+      });
     } finally {
       setCreating(false);
     }
