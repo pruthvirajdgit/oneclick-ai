@@ -12,21 +12,21 @@ Open-source MicroVM based infrastructure for deploying and managing AI employees
 Choose a model, click create — your agent spins up in a Firecracker microVM in seconds.
 
 <p align="center">
-  <img src="docs/assets/create-agent.gif" alt="Create Agent Demo" width="720" />
+  <img src="docs/assets/create_agent.gif" alt="Create Agent Demo" width="720" />
 </p>
 
 ### 💬 Chat with Your Agent
 Real-time conversation with token streaming. Your agent has full coding capabilities powered by OpenClaw.
 
 <p align="center">
-  <img src="docs/assets/chat-agent.gif" alt="Chat Demo" width="720" />
+  <img src="docs/assets/chat_agent.gif" alt="Chat Demo" width="720" />
 </p>
 
 ### 📊 Usage Tracking
 Monitor token usage per agent — daily and all-time stats, rate limits, and cost tracking.
 
 <p align="center">
-  <img src="docs/assets/usage-tracking.gif" alt="Usage Tracking Demo" width="720" />
+  <img src="docs/assets/usage_tracking.gif" alt="Usage Tracking Demo" width="720" />
 </p>
 
 ---
